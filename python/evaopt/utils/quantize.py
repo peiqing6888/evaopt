@@ -1,5 +1,5 @@
 """
-模型量化工具
+Model quantization utilities
 """
 
 import torch
@@ -8,18 +8,18 @@ from typing import Any, Optional
 
 def quantize(model: Any, bits: int = 8, scheme: str = "symmetric") -> Any:
     """
-    將模型參數量化為指定位數
+    Quantize model parameters to specified bit width
     
     Args:
-        model: PyTorch 模型
-        bits: 量化位數 (4-8)
-        scheme: 量化方案 ("symmetric" 或 "asymmetric")
+        model: PyTorch model
+        bits: Quantization bit width (4-8)
+        scheme: Quantization scheme ("symmetric" or "asymmetric")
     
     Returns:
-        量化後的模型
+        Quantized model
     """
     if bits not in [4, 8]:
-        raise ValueError("僅支持 4 位和 8 位量化")
+        raise ValueError("Only 4-bit and 8-bit quantization supported")
     
     def _quantize_tensor(x: torch.Tensor) -> torch.Tensor:
         if scheme == "symmetric":
@@ -33,9 +33,9 @@ def quantize(model: Any, bits: int = 8, scheme: str = "symmetric") -> Any:
             zero_point = torch.round(-min_val * scale)
             return (torch.round(x * scale + zero_point) - zero_point) / scale
     
-    # 遍歷所有參數進行量化
+    # Iterate through all parameters for quantization
     for name, param in model.named_parameters():
-        if param.requires_grad:  # 只量化可訓練參數
+        if param.requires_grad:  # Only quantize trainable parameters
             with torch.no_grad():
                 param.data.copy_(_quantize_tensor(param.data))
     
@@ -47,23 +47,23 @@ def optimize_memory(
     device: str = "mps"
 ) -> None:
     """
-    優化模型內存使用
+    Optimize model memory usage
     
     Args:
-        model: PyTorch 模型
-        max_memory: 最大內存使用量（GB）
-        device: 計算設備
+        model: PyTorch model
+        max_memory: Maximum memory usage (GB)
+        device: Compute device
     """
     if device == "mps":
         torch.mps.empty_cache()
         
-    # 使用 CPU 卸載優化
+    # Use CPU offload optimization
     if hasattr(model, "cpu_offload"):
         model.cpu_offload()
     
-    # 設置梯度檢查點
+    # Enable gradient checkpointing
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
     
-    # 清理未使用的緩存
+    # Clear unused cache
     torch.cuda.empty_cache() if torch.cuda.is_available() else None 

@@ -1,5 +1,5 @@
 """
-示例：優化並運行大型語言模型
+Example: Optimize and run a large language model
 """
 
 import torch
@@ -8,7 +8,7 @@ from evaopt import Optimizer, ModelConfig
 from evaopt.utils import optimize_memory
 
 def main():
-    # 1. 配置優化器
+    # 1. Configure optimizer
     config = ModelConfig(
         model_type="llama2",
         quantization_bits=8,
@@ -19,9 +19,9 @@ def main():
     
     optimizer = Optimizer(config)
     
-    # 2. 加載模型
-    print("正在加載模型...")
-    model_name = "meta-llama/Llama-2-7b-chat-hf"  # 需要 HuggingFace 訪問權限
+    # 2. Load model
+    print("Loading model...")
+    model_name = "meta-llama/Llama-2-7b-chat-hf"  # Requires HuggingFace access
     
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -30,13 +30,13 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
-    # 3. 優化模型
-    print("正在優化模型...")
+    # 3. Optimize model
+    print("Optimizing model...")
     model = optimizer.optimize_model(model)
     
-    # 4. 運行推理
-    print("運行推理測試...")
-    prompt = "請用中文回答：什麼是機器學習？"
+    # 4. Run inference
+    print("Running inference test...")
+    prompt = "Please explain what machine learning is:"
     
     inputs = tokenizer(prompt, return_tensors="pt").to(config.device)
     
@@ -49,12 +49,12 @@ def main():
         )
     
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"\n輸入: {prompt}")
-    print(f"輸出: {response}")
+    print(f"\nInput: {prompt}")
+    print(f"Output: {response}")
     
-    # 5. 顯示內存使用情況
+    # 5. Display memory usage
     memory_stats = optimizer.get_memory_stats()
-    print("\n內存使用情況:")
+    print("\nMemory Usage:")
     for key, value in memory_stats.items():
         print(f"{key}: {value:.2f} GB")
 

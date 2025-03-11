@@ -1,5 +1,5 @@
 """
-EvaOpt 優化器的 Python 實現
+Python implementation of the EvaOpt optimizer
 """
 
 import torch
@@ -11,7 +11,7 @@ from evaopt_core import optimize_tensors
 
 @dataclass
 class ModelConfig:
-    """模型配置"""
+    """Model configuration"""
     model_type: str
     quantization_bits: int = 8
     use_fp16: bool = True
@@ -19,7 +19,7 @@ class ModelConfig:
     device: str = "mps"
 
 class Optimizer:
-    """EvaOpt 優化器"""
+    """EvaOpt optimizer"""
     
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -27,7 +27,7 @@ class Optimizer:
         self._setup_memory_pool()
     
     def _setup_memory_pool(self):
-        """配置內存池"""
+        """Configure memory pool"""
         if self.config.device == "mps":
             torch.mps.empty_cache()
             torch.mps.set_per_process_memory_fraction(
@@ -35,31 +35,31 @@ class Optimizer:
             )
     
     def optimize_model(self, model: torch.nn.Module) -> torch.nn.Module:
-        """優化模型"""
-        # 1. 轉換數據類型
+        """Optimize model"""
+        # 1. Convert data type
         if self.config.use_fp16:
             model = model.half()
         
-        # 2. 移動到目標設備
+        # 2. Move to target device
         model = model.to(self.device)
         
-        # 3. 收集所有參數
+        # 3. Collect all parameters
         tensors = {}
         for name, param in model.named_parameters():
-            # 確保張量是連續的並轉換為 float32
+            # Ensure tensor is contiguous and convert to float32
             tensor = param.data.contiguous().cpu().float()
             tensors[name] = tensor.numpy()
         
-        # 4. 調用 Rust 核心進行優化
+        # 4. Call Rust core for optimization
         try:
             optimized_tensors = optimize_tensors(tensors)
         except Exception as e:
-            print(f"優化過程中的張量狀態:")
+            print(f"Tensor states during optimization:")
             for name, tensor in tensors.items():
                 print(f"{name}: shape={tensor.shape}, dtype={tensor.dtype}")
             raise e
         
-        # 5. 更新模型參數
+        # 5. Update model parameters
         with torch.no_grad():
             for name, tensor in optimized_tensors.items():
                 if name in dict(model.named_parameters()):
@@ -72,7 +72,7 @@ class Optimizer:
         return model
     
     def get_memory_stats(self) -> Dict[str, float]:
-        """獲取內存使用統計"""
+        """Get memory usage statistics"""
         if self.config.device == "mps":
             return {
                 "allocated": torch.mps.current_allocated_memory() / 1024**3,

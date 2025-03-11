@@ -1,5 +1,5 @@
 """
-EvaOpt - 高性能本地化大模型優化引擎
+EvaOpt - High-performance Local LLM Optimization Engine
 """
 
 from .core.optimizer import Optimizer, ModelConfig

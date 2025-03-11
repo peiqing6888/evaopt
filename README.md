@@ -1,72 +1,72 @@
 # EvaOpt - Local LLM Optimization Engine
 
-EvaOpt 是一個為大型語言模型（LLM）優化設計的高性能引擎，專門針對 Apple Silicon 架構優化。本項目結合了 Rust 的高性能和 Python 的易用性，為本地 LLM 部署提供完整的優化解決方案。
+EvaOpt is a high-performance optimization engine designed for Large Language Models (LLMs), specifically optimized for Apple Silicon architecture. This project combines Rust's performance with Python's ease of use to provide a complete optimization solution for local LLM deployment.
 
-## 特點
+## Features
 
-- 🚀 使用 Rust 實現的高性能核心優化引擎
-- 🐍 Python 友好的高層接口
-- 🍎 針對 Apple Silicon (M1/M2/M3) 優化
-- 📊 支持模型量化（INT4/INT8）
-- 💾 智能內存管理和優化
-- 🔄 動態張量優化
-- 🛠 完整的工具集和示例
+- 🚀 High-performance core optimization engine implemented in Rust
+- 🐍 Python-friendly high-level interface
+- 🍎 Optimized for Apple Silicon (M1/M2/M3)
+- 📊 Model quantization support (INT4/INT8)
+- 💾 Smart memory management and optimization
+- 🔄 Dynamic tensor optimization
+- 🛠 Comprehensive toolset and examples
 
-## 系統要求
+## System Requirements
 
-- macOS 運行 Apple Silicon (M1/M2/M3) 處理器
+- macOS with Apple Silicon (M1/M2/M3) processor
 - Python 3.9+
 - Rust 1.75+
-- 建議內存 16GB+
+- Recommended memory: 16GB+
 
-## 安裝
+## Installation
 
-1. 克隆倉庫：
+1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/evaopt.git
 cd evaopt
 ```
 
-2. 創建並激活虛擬環境：
+2. Create and activate virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate  # Linux/macOS
 ```
 
-3. 安裝依賴：
+3. Install dependencies:
 ```bash
-# 安裝 Rust 工具鏈（如果未安裝）
+# Install Rust toolchain (if not installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 安裝 Python 依賴
+# Install Python dependencies
 pip install -r requirements.txt
 
-# 安裝開發版本
+# Install development version
 pip install -e .
 ```
 
-## 項目結構
+## Project Structure
 
 ```
 evaopt/
-├── rust/              # Rust 核心實現
-│   ├── src/          # 源代碼
-│   └── build.rs      # 構建腳本
-├── python/           # Python 綁定和高層接口
-│   └── evaopt/      # Python 包
-│       ├── core/    # 核心功能
-│       └── utils/   # 工具函數
-├── examples/         # 使用示例
-└── benchmarks/       # 性能測試
+├── rust/              # Rust core implementation
+│   ├── src/          # Source code
+│   └── build.rs      # Build script
+├── python/           # Python bindings and high-level interface
+│   └── evaopt/      # Python package
+│       ├── core/    # Core functionality
+│       └── utils/   # Utility functions
+├── examples/         # Usage examples
+└── benchmarks/       # Performance tests
 ```
 
-## 快速開始
+## Quick Start
 
-1. 基本優化示例：
+1. Basic optimization example:
 ```python
 from evaopt import Optimizer, ModelConfig
 
-# 配置優化器
+# Configure optimizer
 config = ModelConfig(
     model_type="llama2",
     quantization_bits=8,
@@ -75,51 +75,51 @@ config = ModelConfig(
     device="mps"
 )
 
-# 創建優化器
+# Create optimizer
 optimizer = Optimizer(config)
 
-# 優化模型
+# Optimize model
 optimized_model = optimizer.optimize_model(model)
 ```
 
-2. 運行完整示例：
+2. Run complete example:
 ```bash
 python examples/optimize_llm.py
 ```
 
-## 主要功能
+## Core Features
 
-- **模型優化**：
-  - 智能張量優化
-  - 自動量化（INT4/INT8）
-  - 內存使用優化
-  - 設備特定優化
+- **Model Optimization**:
+  - Intelligent tensor optimization
+  - Automatic quantization (INT4/INT8)
+  - Memory usage optimization
+  - Device-specific optimization
 
-- **內存管理**：
-  - 動態內存分配
-  - 智能緩存管理
-  - 內存使用監控
+- **Memory Management**:
+  - Dynamic memory allocation
+  - Smart cache management
+  - Memory usage monitoring
 
-- **性能優化**：
-  - MPS 加速支持
-  - 並行計算優化
-  - 低精度推理
+- **Performance Optimization**:
+  - MPS acceleration support
+  - Parallel computation optimization
+  - Low-precision inference
 
-## 貢獻指南
+## Contributing
 
-1. Fork 本倉庫
-2. 創建特性分支：`git checkout -b feature/amazing-feature`
-3. 提交更改：`git commit -m 'Add amazing feature'`
-4. 推送分支：`git push origin feature/amazing-feature`
-5. 提交 Pull Request
+1. Fork the repository
+2. Create feature branch: `git checkout -b feature/amazing-feature`
+3. Commit changes: `git commit -m 'Add amazing feature'`
+4. Push branch: `git push origin feature/amazing-feature`
+5. Submit Pull Request
 
-## 許可證
+## License
 
 MIT License
 
-## 致謝
+## Acknowledgments
 
-感謝所有為本項目做出貢獻的開發者。特別感謝：
-- Rust 社區
-- PyTorch 團隊
-- Hugging Face 團隊 
+Thanks to all developers who contributed to this project. Special thanks to:
+- Rust Community
+- PyTorch Team
+- Hugging Face Team 
