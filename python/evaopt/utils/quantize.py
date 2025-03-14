@@ -6,6 +6,32 @@ import torch
 import numpy as np
 from typing import Any, Optional
 
+def quantize_tensor(tensor: np.ndarray, bits: int = 8, scheme: str = "symmetric") -> np.ndarray:
+    """
+    Quantize tensor to specified bit width
+    
+    Args:
+        tensor: Input tensor as numpy array
+        bits: Quantization bit width (4-8)
+        scheme: Quantization scheme ("symmetric" or "asymmetric")
+    
+    Returns:
+        Quantized tensor
+    """
+    if bits not in [4, 8]:
+        raise ValueError("Only 4-bit and 8-bit quantization supported")
+    
+    if scheme == "symmetric":
+        max_val = np.max(np.abs(tensor))
+        scale = (2 ** (bits - 1) - 1) / max_val
+        return np.round(tensor * scale) / scale
+    else:  # asymmetric
+        min_val = np.min(tensor)
+        max_val = np.max(tensor)
+        scale = (2 ** bits - 1) / (max_val - min_val)
+        zero_point = np.round(-min_val * scale)
+        return (np.round(tensor * scale + zero_point) - zero_point) / scale
+
 def quantize(model: Any, bits: int = 8, scheme: str = "symmetric") -> Any:
     """
     Quantize model parameters to specified bit width

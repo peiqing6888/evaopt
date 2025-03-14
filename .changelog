@@ -1,0 +1,42 @@
+# Changelog
+
+## [0.1.0] - 2024-03-XX
+
+### Added
+- 🚀 High-performance Rust core engine implementation
+  - Matrix optimization methods (SVD, Truncated SVD, Randomized SVD, Low-rank, Sparse)
+  - Memory management with configurable strategies
+  - Tensor operations with quantization support
+  - Python bindings for seamless integration
+
+- 📊 Matrix Optimization Features
+  - SVD decomposition with automatic rank selection
+  - Truncated SVD for large matrix optimization
+  - Randomized SVD with configurable oversampling
+  - Low-rank approximation using alternating least squares
+  - Sparse matrix optimization with threshold control
+  - Comprehensive error handling and statistics
+
+- 💾 Memory Management
+  - Smart memory pool for tensor operations
+  - Configurable optimization strategies (Aggressive, Balanced, Performance)
+  - Automatic memory usage tracking and statistics
+  - Memory-aware quantization (4-bit, 8-bit support)
+
+- 🔧 Development Tools
+  - Comprehensive test suite for matrix operations
+  - Performance benchmarking utilities
+  - Example scripts for model optimization
+  - Error handling and logging improvements
+
+### Changed
+- Optimized matrix operations for Apple Silicon
+- Enhanced compression ratio calculations
+- Improved error handling with custom error types
+- Updated Python API for better usability
+
+### Fixed
+- Matrix shape validation in optimization methods
+- Memory leak in tensor operations
+- Quantization precision issues
+- Error propagation in matrix decomposition

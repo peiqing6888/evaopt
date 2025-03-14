@@ -64,3 +64,8 @@ ENV/
 models/
 checkpoints/
 logs/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+bench_results/
