@@ -59,3 +59,9 @@
 - Included performance optimization guide
 - Updated installation instructions for Apple Silicon
 - Added benchmark results and comparison charts
+
+- 🔥 Latest Benchmark Results
+  - EVA-01 Mode: 5.2s inference, 1.72GB RAM, BLEU 0.200
+  - EVA-02 Mode: 3.8s inference, 1.76GB RAM, BLEU 0.218
+  - 26% speed improvement in optimized mode
+  - Stable memory usage under 2GB

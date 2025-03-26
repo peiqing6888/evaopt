@@ -69,3 +69,18 @@ logs/
 .coverage
 htmlcov/
 bench_results/
+
+# Demo outputs
+results/
+eva_optimization_*/
+*.json
+*.png
+*.jpg
+*.pdf
+*.metrics
+*.log
+
+# Temporary files
+.temp/
+*.tmp
+*.bak
