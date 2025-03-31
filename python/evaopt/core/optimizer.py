@@ -7,8 +7,15 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-from evaopt_core import optimize_tensors, get_matrix_stats
+from evaopt_core import optimize_tensors, get_matrix_stats as _get_matrix_stats
 from ..utils.quantize import quantize_tensor
+
+@dataclass
+class BlockSparseConfig:
+    """Block-sparse optimization configuration"""
+    block_size: int = 32
+    sparsity_threshold: float = 0.1
+    min_block_norm: float = 0.01
 
 @dataclass
 class ModelConfig:
@@ -23,6 +30,7 @@ class ModelConfig:
     use_fp16: bool = True
     max_memory_gb: float = 24.0
     device: str = "mps"
+    block_sparse: Optional[BlockSparseConfig] = None  # Add block-sparse config
 
 class Optimizer:
     """EvaOpt optimizer"""
@@ -58,7 +66,29 @@ class Optimizer:
         
         # 4. Call Rust core for optimization
         try:
-            optimized_tensors = optimize_tensors(tensors)
+            config_dict = {
+                "sparsity_threshold": self.config.sparsity_threshold,
+                "quantization_bits": self.config.quantization_bits,
+                "use_parallel": self.config.use_parallel,
+            }
+            
+            if self.config.matrix_method:
+                config_dict.update({
+                    "matrix_method": self.config.matrix_method,
+                    "matrix_rank": self.config.matrix_rank or 10,
+                    "matrix_tolerance": self.config.matrix_tolerance or 1e-6,
+                })
+                
+                # Add block-sparse configuration if specified
+                if self.config.matrix_method == "block_sparse" and self.config.block_sparse:
+                    config_dict["block_sparse"] = {
+                        "block_size": self.config.block_sparse.block_size,
+                        "sparsity_threshold": self.config.block_sparse.sparsity_threshold,
+                        "min_block_norm": self.config.block_sparse.min_block_norm,
+                    }
+            
+            optimized_tensors = optimize_tensors(tensors, config_dict)
+            
         except Exception as e:
             print(f"Tensor states during optimization:")
             for name, tensor in tensors.items():
@@ -108,32 +138,88 @@ class Optimizer:
                 "matrix_rank": self.config.matrix_rank or 10,
                 "matrix_tolerance": self.config.matrix_tolerance or 1e-6,
             })
+            
+            # Add block-sparse configuration if specified
+            if self.config.matrix_method == "block_sparse" and self.config.block_sparse:
+                config_dict["block_sparse"] = {
+                    "block_size": self.config.block_sparse.block_size,
+                    "sparsity_threshold": self.config.block_sparse.sparsity_threshold,
+                    "min_block_norm": self.config.block_sparse.min_block_norm,
+                }
         
         return optimize_tensors(tensors, config_dict)
     
     def get_matrix_stats(self, matrix: np.ndarray, method: str, 
                         rank: Optional[int] = None,
-                        tolerance: Optional[float] = None) -> Dict[str, float]:
+                        tolerance: Optional[float] = None,
+                        block_sparse_config: Optional[BlockSparseConfig] = None) -> Dict[str, float]:
         """Get statistics for matrix optimization.
         
         Args:
             matrix: Input matrix to analyze
-            method: Optimization method ("svd", "low_rank", or "sparse")
+            method: Optimization method ("svd", "low_rank", "sparse", "block_sparse")
             rank: Target rank for low-rank approximation
             tolerance: Error tolerance threshold
+            block_sparse_config: Configuration for block-sparse optimization
             
         Returns:
             Dictionary containing optimization statistics
         """
         if not isinstance(matrix, np.ndarray) or matrix.ndim != 2:
             raise ValueError("Input must be a 2D numpy array")
-            
-        return get_matrix_stats(matrix, method, rank, tolerance)
+        
+        # Convert method to lowercase for case-insensitive comparison
+        method = method.lower()
+        
+        # Map lowercase method to correct case
+        method_map = {
+            "svd": "svd",
+            "low_rank": "low_rank",
+            "sparse": "sparse",
+            "block_sparse": "block_sparse",
+            "truncated_svd": "truncated_svd",
+            "randomized_svd": "randomized_svd"
+        }
+        
+        if method not in method_map:
+            valid_methods = set(method_map.keys())
+            raise ValueError(f"Invalid method. Must be one of: {valid_methods}")
+        
+        # Create config dict for block-sparse method
+        config_dict = {
+            "matrix_method": method_map[method],
+            "matrix_rank": rank or 10,
+            "matrix_tolerance": tolerance or 1e-6,
+        }
+        
+        # Add block-sparse configuration if provided
+        if method == "block_sparse" and block_sparse_config:
+            config_dict["block_sparse"] = {
+                "block_size": block_sparse_config.block_size,
+                "sparsity_threshold": block_sparse_config.sparsity_threshold,
+                "min_block_norm": block_sparse_config.min_block_norm,
+            }
+        
+        # Call Rust core for optimization
+        result = optimize_tensors({"input": matrix}, config_dict)
+        compressed = result["input"]
+        
+        # Calculate statistics
+        original_size = matrix.nbytes
+        compressed_size = compressed.nbytes
+        compression_ratio = 1.0 - (compressed_size / original_size)
+        error = np.linalg.norm(matrix - compressed) / np.linalg.norm(matrix)
+        
+        return {
+            "compression_ratio": compression_ratio,
+            "error": error,
+            "storage_size": compressed_size,
+        }
 
 def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and normalize optimization configuration."""
     default_config = {
-        "method": "SVD",
+        "method": "svd",
         "rank": 10,
         "tolerance": 1e-6,
         "use_parallel": True,
@@ -149,7 +235,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     final_config.update(config)
     
     # Validate method
-    valid_methods = {"SVD", "TruncatedSVD", "RandomizedSVD", "LowRank", "Sparse"}
+    valid_methods = {"svd", "truncated_svd", "randomized_svd", "low_rank", "sparse", "block_sparse"}
     if final_config["method"] not in valid_methods:
         raise ValueError(f"Invalid method. Must be one of: {valid_methods}")
     

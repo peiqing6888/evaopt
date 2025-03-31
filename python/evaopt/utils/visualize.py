@@ -37,42 +37,52 @@ class EVAVisualizer:
         prefix = colored(f"[{status_type.upper()}]", color)
         print(f"{prefix} {message}")
         
-    def plot_matrix_optimization(self, original, optimized, method_name):
-        """Display matrix optimization comparison in terminal."""
-        self.print_status(f"\nMatrix Optimization Results for {method_name}:", "info")
+    def plot_matrix_optimization(self, original: np.ndarray, optimized: np.ndarray, title: str = "Matrix Optimization"):
+        """Plot original and optimized matrix patterns."""
+        self.print_status(f"\nMatrix Optimization Results for {title}", "info")
         
-        # Calculate compression ratio
+        # Calculate compression statistics
         orig_nonzero = np.count_nonzero(original)
         opt_nonzero = np.count_nonzero(optimized)
-        compression_ratio = 1 - (opt_nonzero / orig_nonzero)
         
-        print("\nCompression Analysis:")
-        print(f"Original Non-zero Elements: {orig_nonzero}")
-        print(f"Optimized Non-zero Elements: {opt_nonzero}")
-        print(f"Compression Ratio: {compression_ratio:.2%}")
+        # Avoid division by zero
+        if orig_nonzero > 0:
+            compression_ratio = 1 - (opt_nonzero / orig_nonzero)
+        else:
+            compression_ratio = 0.0
         
-        # Display matrix patterns using ASCII art
-        print("\nMatrix Pattern Visualization:")
-        self._display_matrix_pattern(original, "Original")
-        print()
-        self._display_matrix_pattern(optimized, "Optimized")
+        self.print_status("\nCompression Analysis:", "info")
+        self.print_status(f"Original Non-zero Elements: {orig_nonzero}", "info")
+        self.print_status(f"Optimized Non-zero Elements: {opt_nonzero}", "info")
+        self.print_status(f"Compression Ratio: {compression_ratio:.2%}", "info")
         
-    def _display_matrix_pattern(self, matrix, title, threshold=0.1):
-        """Display a simplified matrix pattern using ASCII characters."""
-        print(f"\n{title} Matrix Pattern:")
-        chars = " ░▒▓█"  # Different density characters
-        for i in range(min(10, matrix.shape[0])):  # Show first 10 rows
-            row = ""
-            for j in range(min(20, matrix.shape[1])):  # Show first 20 columns
-                val = abs(matrix[i, j])
-                if val < threshold:
-                    char = chars[0]
-                else:
-                    idx = min(int(val * 4), 4)
-                    char = chars[idx]
-                row += char
-            print(row)
-            
+        # Visualization
+        self.print_status("\nMatrix Pattern Visualization:\n", "info")
+        
+        # Convert to binary pattern for visualization
+        def to_pattern(arr):
+            pattern = np.zeros_like(arr, dtype=str)
+            pattern[arr == 0] = ' '
+            pattern[np.abs(arr) > 0] = '█'
+            pattern[np.abs(arr) > np.max(np.abs(arr))*0.75] = '█'
+            pattern[np.abs(arr) > np.max(np.abs(arr))*0.5] = '▓'
+            pattern[np.abs(arr) > np.max(np.abs(arr))*0.25] = '▒'
+            pattern[np.abs(arr) > 0] = '░'
+            return pattern
+        
+        # Print patterns
+        orig_pattern = to_pattern(original)
+        opt_pattern = to_pattern(optimized)
+        
+        self.print_status("Original Matrix Pattern:", "info")
+        for row in orig_pattern:
+            print(''.join(row))
+        
+        print("\n")
+        self.print_status("Optimized Matrix Pattern:", "info")
+        for row in opt_pattern:
+            print(''.join(row))
+        
     def update_metrics(self, metrics):
         """Update and display the current metrics."""
         self.metrics = metrics

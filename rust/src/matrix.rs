@@ -24,6 +24,7 @@ pub enum DecompositionMethod {
     Sparse,
     TruncatedSVD,  // New method
     RandomizedSVD,  // New method
+    BlockSparse,  // Add new method
 }
 
 /// Matrix optimization configuration
@@ -35,6 +36,7 @@ pub struct MatrixConfig {
     pub use_parallel: bool,
     pub oversampling: usize,  // For randomized methods
     pub power_iterations: usize,  // For randomized methods
+    pub block_sparse: Option<BlockSparseConfig>,  // Add block-sparse config
 }
 
 impl Default for MatrixConfig {
@@ -46,6 +48,7 @@ impl Default for MatrixConfig {
             use_parallel: true,
             oversampling: 5,
             power_iterations: 2,
+            block_sparse: None,
         }
     }
 }
@@ -57,6 +60,32 @@ pub struct OptimizationResult {
     pub compression_ratio: f32,
     pub error: f32,
     pub storage_size: usize,  // Actual storage size in bytes
+}
+
+/// Block-sparse optimization configuration
+#[derive(Debug, Clone)]
+pub struct BlockSparseConfig {
+    pub block_size: usize,
+    pub sparsity_threshold: f32,
+    pub min_block_norm: f32,
+}
+
+impl Default for BlockSparseConfig {
+    fn default() -> Self {
+        Self {
+            block_size: 32,
+            sparsity_threshold: 0.1,
+            min_block_norm: 0.01,
+        }
+    }
+}
+
+/// Block-sparse optimization result
+#[derive(Debug)]
+pub struct BlockSparseResult {
+    pub blocks: Vec<Array2<f32>>,
+    pub indices: Vec<(usize, usize)>,
+    pub shape: (usize, usize),
 }
 
 /// Calculate compression statistics
@@ -360,40 +389,75 @@ pub fn optimize_sparse(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<Op
     })
 }
 
+/// Optimize matrix using block-sparse method
+pub fn optimize_block_sparse(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<OptimizationResult, MatrixError> {
+    // Clone the block_sparse config to avoid borrowing issues
+    let block_config = match &config.block_sparse {
+        Some(cfg) => cfg.clone(),
+        None => BlockSparseConfig::default(),
+    };
+    
+    let (nrows, ncols) = matrix.dim();
+    
+    // Calculate number of blocks
+    let n_row_blocks = (nrows + block_config.block_size - 1) / block_config.block_size;
+    let n_col_blocks = (ncols + block_config.block_size - 1) / block_config.block_size;
+    
+    let mut compressed = Array2::<f32>::zeros((nrows, ncols));
+    let mut blocks = Vec::new();
+    let mut indices = Vec::new();
+    
+    // Calculate matrix norm for global thresholding
+    let matrix_norm = frobenius_norm(matrix);
+    let global_threshold = block_config.sparsity_threshold * matrix_norm;
+    
+    // Process each block
+    for i in 0..n_row_blocks {
+        for j in 0..n_col_blocks {
+            let row_start = i * block_config.block_size;
+            let row_end = (row_start + block_config.block_size).min(nrows);
+            let col_start = j * block_config.block_size;
+            let col_end = (col_start + block_config.block_size).min(ncols);
+            
+            let block = matrix.slice(s![row_start..row_end, col_start..col_end]).to_owned();
+            let block_norm = frobenius_norm(&block);
+            
+            // Only keep blocks with significant norm
+            if block_norm > block_config.min_block_norm * matrix_norm {
+                // Keep the block as is, without element-wise sparsification
+                compressed.slice_mut(s![row_start..row_end, col_start..col_end]).assign(&block);
+                blocks.push(block);
+                indices.push((i, j));
+            }
+            // If block norm is too small, the block remains zero in the compressed matrix
+        }
+    }
+    
+    let diff = matrix - &compressed;
+    let error = frobenius_norm(&diff) / matrix_norm;
+    let (compression_ratio, storage_size) = get_compression_stats(matrix, &blocks, error);
+    
+    Ok(OptimizationResult {
+        compressed,
+        compression_ratio,
+        error,
+        storage_size,
+    })
+}
+
 /// Calculate Frobenius norm of a matrix
 fn frobenius_norm(matrix: &Array2<f32>) -> f32 {
-    matrix.iter().map(|&x| x * x).sum::<f32>().sqrt()
+    matrix.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
 /// Optimize matrix using specified method
-pub fn optimize_matrix(matrix: &Array2<f32>, config: &MatrixConfig) -> OptimizationResult {
-    let result = match config.method {
+pub fn optimize_matrix(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<OptimizationResult, MatrixError> {
+    match config.method {
         DecompositionMethod::SVD => optimize_svd(matrix, config),
-        DecompositionMethod::TruncatedSVD => optimize_truncated_svd(matrix, config),
-        DecompositionMethod::RandomizedSVD => optimize_randomized_svd(matrix, config),
         DecompositionMethod::LowRank => optimize_low_rank(matrix, config),
         DecompositionMethod::Sparse => optimize_sparse(matrix, config),
-    };
-    
-    match result {
-        Ok(opt_result) => opt_result,
-        Err(e) => {
-            eprintln!("Matrix optimization error: {}", e);
-            // Fall back to sparse optimization with default config
-            let fallback_config = MatrixConfig {
-                method: DecompositionMethod::Sparse,
-                rank: config.rank,
-                tolerance: 1e-6,
-                use_parallel: config.use_parallel,
-                oversampling: config.oversampling,
-                power_iterations: config.power_iterations,
-            };
-            optimize_sparse(matrix, &fallback_config).unwrap_or_else(|_| OptimizationResult {
-                compressed: matrix.clone(),
-                compression_ratio: 0.0,
-                error: 0.0,
-                storage_size: matrix.len() * std::mem::size_of::<f32>(),
-            })
-        }
+        DecompositionMethod::TruncatedSVD => optimize_truncated_svd(matrix, config),
+        DecompositionMethod::RandomizedSVD => optimize_randomized_svd(matrix, config),
+        DecompositionMethod::BlockSparse => optimize_block_sparse(matrix, config),
     }
 } 

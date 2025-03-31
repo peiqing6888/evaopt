@@ -7,7 +7,7 @@ mod tensor;
 mod memory;
 mod matrix;
 
-use matrix::{MatrixConfig, DecompositionMethod, optimize_matrix};
+use matrix::{MatrixConfig, DecompositionMethod, optimize_matrix, BlockSparseConfig};
 
 /// Tensor optimization configuration
 #[derive(Debug, Clone)]
@@ -49,9 +49,17 @@ fn optimize_tensors(
             
             // Apply matrix optimization if configured
             if let Some(matrix_config) = &config.matrix_config {
-                let result = optimize_matrix(&matrix, matrix_config);
-                let py_array = result.compressed.into_pyarray(py);
-                optimized.insert(name, py_array.to_object(py));
+                match optimize_matrix(&matrix, matrix_config) {
+                    Ok(result) => {
+                        let py_array = result.compressed.into_pyarray(py);
+                        optimized.insert(name, py_array.to_object(py));
+                    },
+                    Err(e) => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Matrix optimization failed: {}", e)
+                        ));
+                    }
+                }
                 continue;
             }
             
@@ -125,12 +133,13 @@ fn parse_config(py: Python, config: Option<HashMap<String, PyObject>>) -> PyResu
         // Parse matrix optimization config
         if let Some(matrix_method) = config_map.get("matrix_method") {
             if let Ok(method_str) = matrix_method.extract::<String>(py) {
-                let method = match method_str.as_str() {
+                let method = match method_str.to_lowercase().as_str() {
                     "svd" => DecompositionMethod::SVD,
                     "low_rank" => DecompositionMethod::LowRank,
                     "sparse" => DecompositionMethod::Sparse,
                     "truncated_svd" => DecompositionMethod::TruncatedSVD,
                     "randomized_svd" => DecompositionMethod::RandomizedSVD,
+                    "block_sparse" => DecompositionMethod::BlockSparse,
                     _ => return Ok(opt_config),
                 };
                 
@@ -150,6 +159,30 @@ fn parse_config(py: Python, config: Option<HashMap<String, PyObject>>) -> PyResu
                     .and_then(|x| x.extract::<usize>(py).ok())
                     .unwrap_or(2);
                 
+                // Parse block-sparse config if method is block_sparse
+                let block_sparse = if method_str.to_lowercase() == "block_sparse" {
+                    let block_config = config_map.get("block_sparse")
+                        .and_then(|x| x.extract::<HashMap<String, PyObject>>(py).ok());
+                    
+                    if let Some(block_map) = block_config {
+                        Some(BlockSparseConfig {
+                            block_size: block_map.get("block_size")
+                                .and_then(|x| x.extract::<usize>(py).ok())
+                                .unwrap_or(32),
+                            sparsity_threshold: block_map.get("sparsity_threshold")
+                                .and_then(|x| x.extract::<f32>(py).ok())
+                                .unwrap_or(0.3),
+                            min_block_norm: block_map.get("min_block_norm")
+                                .and_then(|x| x.extract::<f32>(py).ok())
+                                .unwrap_or(1e-6),
+                        })
+                    } else {
+                        Some(BlockSparseConfig::default())
+                    }
+                } else {
+                    None
+                };
+                
                 opt_config.matrix_config = Some(MatrixConfig {
                     method,
                     rank,
@@ -157,6 +190,7 @@ fn parse_config(py: Python, config: Option<HashMap<String, PyObject>>) -> PyResu
                     use_parallel: opt_config.use_parallel,
                     oversampling,
                     power_iterations,
+                    block_sparse,
                 });
             }
         }
@@ -181,30 +215,76 @@ fn get_matrix_stats(
     let matrix = Array2::from_shape_vec(shape, array.as_slice()?.to_vec())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     
-    let config = MatrixConfig {
-        method: match method {
-            "svd" => DecompositionMethod::SVD,
-            "low_rank" => DecompositionMethod::LowRank,
-            "sparse" => DecompositionMethod::Sparse,
-            "truncated_svd" => DecompositionMethod::TruncatedSVD,
-            "randomized_svd" => DecompositionMethod::RandomizedSVD,
-            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid method")),
+    let config = match method.to_lowercase().as_str() {
+        "svd" => MatrixConfig {
+            method: DecompositionMethod::SVD,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: None,
         },
-        rank: rank.unwrap_or(10),
-        tolerance: tolerance.unwrap_or(1e-6),
-        use_parallel: true,
-        oversampling: 5,
-        power_iterations: 2,
+        "low_rank" => MatrixConfig {
+            method: DecompositionMethod::LowRank,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: None,
+        },
+        "sparse" => MatrixConfig {
+            method: DecompositionMethod::Sparse,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: None,
+        },
+        "block_sparse" => MatrixConfig {
+            method: DecompositionMethod::BlockSparse,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: Some(BlockSparseConfig::default()),
+        },
+        "truncated_svd" => MatrixConfig {
+            method: DecompositionMethod::TruncatedSVD,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: None,
+        },
+        "randomized_svd" => MatrixConfig {
+            method: DecompositionMethod::RandomizedSVD,
+            rank: rank.unwrap_or(10),
+            tolerance: tolerance.unwrap_or(1e-6),
+            use_parallel: true,
+            oversampling: 5,
+            power_iterations: 2,
+            block_sparse: None,
+        },
+        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid method")),
     };
     
-    let result = optimize_matrix(&matrix, &config);
-    
-    let mut stats = HashMap::new();
-    stats.insert("compression_ratio".to_string(), result.compression_ratio.to_object(py));
-    stats.insert("error".to_string(), result.error.to_object(py));
-    stats.insert("storage_size".to_string(), result.storage_size.to_object(py));
-    
-    Ok(stats)
+    match optimize_matrix(&matrix, &config) {
+        Ok(result) => {
+            let mut stats = HashMap::new();
+            stats.insert("compression_ratio".to_string(), result.compression_ratio.to_object(py));
+            stats.insert("error".to_string(), result.error.to_object(py));
+            stats.insert("storage_size".to_string(), result.storage_size.to_object(py));
+            Ok(stats)
+        },
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Matrix optimization failed: {}", e)
+        ))
+    }
 }
 
 /// Initialize Python module
