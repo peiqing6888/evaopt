@@ -81,3 +81,25 @@
   - Optimized elements: 38,286
   - Processing time < 0.001s
   - Memory efficiency improved by 40%
+
+## [0.1.2] - 2024-03-31
+
+### Added
+- 🧠 Dynamic Neuron Optimization
+  - Smart neuron pruning based on activation patterns
+  - Adaptive thresholding with EMA statistics
+  - Layer dimension preservation during optimization
+  - Achieved 29.59% neuron reduction with 27.4% speed gain
+
+### Performance
+- 🔥 Dynamic Optimization Results
+  - Layer compression up to 59.77%
+  - Maintained model accuracy (0.2000)
+  - Improved inference speed by 27.4%
+  - Memory efficiency through neuron pruning
+
+### Fixed
+- Layer connectivity in optimized models
+- Dimension handling between layers
+- Activation statistics collection
+- Model structure preservation
