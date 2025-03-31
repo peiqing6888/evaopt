@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 
 from evaopt_core import optimize_tensors, get_matrix_stats as _get_matrix_stats
 from ..utils.quantize import quantize_tensor
+from .dynamic import DynamicNeuronOptimizer, DynamicNeuronConfig
 
 @dataclass
 class BlockSparseConfig:
@@ -31,6 +32,7 @@ class ModelConfig:
     max_memory_gb: float = 24.0
     device: str = "mps"
     block_sparse: Optional[BlockSparseConfig] = None  # Add block-sparse config
+    dynamic_neuron: Optional[DynamicNeuronConfig] = None  # Add dynamic neuron config
 
 class Optimizer:
     """EvaOpt optimizer"""
@@ -39,6 +41,12 @@ class Optimizer:
         self.config = config or ModelConfig()
         self.device = torch.device(self.config.device)
         self._setup_memory_pool()
+        
+        # Initialize dynamic neuron optimizer if configured
+        self.dynamic_optimizer = None
+        if self.config.matrix_method == "dynamic_neuron":
+            dynamic_config = self.config.dynamic_neuron or DynamicNeuronConfig()
+            self.dynamic_optimizer = DynamicNeuronOptimizer(dynamic_config)
     
     def _setup_memory_pool(self):
         """Configure memory pool"""
@@ -50,7 +58,11 @@ class Optimizer:
     
     def optimize_model(self, model: torch.nn.Module) -> torch.nn.Module:
         """Optimize model"""
-        # 1. Convert data type
+        # Check if using dynamic neuron optimization
+        if self.config.matrix_method == "dynamic_neuron" and self.dynamic_optimizer is not None:
+            return self.dynamic_optimizer.optimize_model(model)
+            
+        # Original optimization logic
         if self.config.use_fp16:
             model = model.half()
         
