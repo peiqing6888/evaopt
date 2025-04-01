@@ -11,14 +11,14 @@ import logging
 @dataclass
 class DynamicNeuronConfig:
     """Configuration for dynamic neuron optimization"""
-    activation_threshold: float = 0.01  # Minimum activation threshold
+    activation_threshold: float = 0.1  # Minimum activation threshold
     window_size: int = 100  # Number of forward passes to track
     min_active_ratio: float = 0.3  # Minimum ratio of active neurons to keep
     update_frequency: int = 10  # How often to update activation statistics
-    stabilization_threshold: float = 0.001  # Threshold for activation stability
+    stabilization_threshold: float = 0.01  # Threshold for activation stability
     warmup_steps: int = 50  # Number of steps before starting optimization
-    relative_threshold: bool = True  # Use relative thresholds based on layer statistics
-    percentile_threshold: float = 25.0  # Percentile threshold for neuron pruning
+    relative_threshold: float = 0.5  # Use relative thresholds based on layer statistics
+    percentile_threshold: float = 40.0  # Percentile threshold for neuron pruning
     ema_alpha: float = 0.1  # EMA weight for neuron statistics
     min_neurons: int = 4  # Minimum number of neurons to keep per layer
 
@@ -93,77 +93,60 @@ class DynamicNeuronOptimizer:
         self.hooks.append(hook_handle)
         return hook_handle
     
-    def update_activations(self, layer_name: str, activations: torch.Tensor) -> None:
-        """Update activation history for a layer"""
-        # Convert to numpy for efficient processing
-        act_np = activations.detach().cpu().numpy()
+    def update_activations(self, layer_name: str, output: torch.Tensor) -> None:
+        """Update activation statistics for a layer"""
+        # Get mean activation per neuron
+        activations = output.detach().abs().mean(dim=0).cpu().numpy()
         
-        # Calculate mean activation per neuron
-        neuron_activations = np.mean(np.abs(act_np), axis=0)
-        
+        # Update running statistics using EMA
         stats = self.layer_stats[layer_name]
-        current_max = float(np.max(neuron_activations))
-        current_min = float(np.min(neuron_activations))
-        current_mean = float(np.mean(neuron_activations))
-        current_std = float(np.std(neuron_activations))
+        stats["max_activation"] = max(
+            stats["max_activation"] * (1 - self.config.ema_alpha),
+            float(np.max(activations)) * self.config.ema_alpha
+        )
+        stats["min_activation"] = min(
+            stats["min_activation"] * (1 - self.config.ema_alpha),
+            float(np.min(activations)) * self.config.ema_alpha
+        )
         
-        # Update running statistics with EMA
-        alpha = self.config.ema_alpha
-        stats["max_activation"] = max(stats["max_activation"], current_max)
-        stats["min_activation"] = min(stats["min_activation"], current_min)
-        stats["mean_activation"] = (1 - alpha) * stats["mean_activation"] + alpha * current_mean
-        stats["std_activation"] = (1 - alpha) * stats["std_activation"] + alpha * current_std
+        # Update neuron-wise statistics
+        stats["neuron_means"] = stats["neuron_means"] * (1 - self.config.ema_alpha) + \
+                               activations * self.config.ema_alpha
+        stats["neuron_peaks"] = np.maximum(
+            stats["neuron_peaks"] * (1 - self.config.ema_alpha),
+            activations * self.config.ema_alpha
+        )
         
-        # Update neuron-specific statistics
-        stats["neuron_means"] = (1 - alpha) * stats["neuron_means"] + alpha * neuron_activations
-        stats["neuron_peaks"] = np.maximum(stats["neuron_peaks"], neuron_activations)
+        # Calculate mean and std
+        stats["mean_activation"] = float(np.mean(stats["neuron_means"]))
+        stats["std_activation"] = float(np.std(stats["neuron_means"]))
         
-        # Calculate percentile threshold based on neuron means
-        stats["percentile_threshold"] = float(np.percentile(stats["neuron_means"], self.config.percentile_threshold))
+        # Calculate percentile threshold
+        stats["percentile_threshold"] = float(np.percentile(
+            stats["neuron_means"],
+            self.config.percentile_threshold
+        ))
         
-        # Calculate adaptive threshold based on layer statistics
-        mean_threshold = stats["mean_activation"] * self.config.activation_threshold
-        peak_threshold = np.mean(stats["neuron_peaks"]) * self.config.activation_threshold
-        percentile_threshold = stats["percentile_threshold"]
+        # Update frozen neurons
+        frozen = set()
+        threshold = self.config.activation_threshold
+        means = stats["neuron_means"].flatten()
+        peaks = stats["neuron_peaks"].flatten()
         
-        # Use the most aggressive threshold
-        threshold = max(mean_threshold, percentile_threshold)
-        if not self.config.relative_threshold:
-            threshold = self.config.activation_threshold
+        for i, (mean_act, peak_act) in enumerate(zip(means, peaks)):
+            if mean_act < threshold and peak_act < threshold * 2:
+                frozen.add(i)
         
-        # Update neuron histories and check for freezing
-        for neuron_id, activation in enumerate(neuron_activations):
-            if neuron_id not in self.activation_history[layer_name]:
-                self.activation_history[layer_name][neuron_id] = []
-            
-            history = self.activation_history[layer_name][neuron_id]
-            history.append(float(activation))
-            
-            # Keep fixed window size
-            if len(history) > self.config.window_size:
-                history.pop(0)
-            
-            # Check if neuron should be frozen
-            if len(history) == self.config.window_size and neuron_id not in self.frozen_neurons[layer_name]:
-                mean_activation = np.mean(history)
-                std_activation = np.std(history)
-                peak_activation = stats["neuron_peaks"][neuron_id]
-                
-                # Freeze if consistently low activation and stable
-                should_freeze = (
-                    mean_activation < threshold or
-                    stats["neuron_means"][neuron_id] < percentile_threshold or
-                    peak_activation < peak_threshold
-                ) and std_activation < self.config.stabilization_threshold * stats["mean_activation"]
-                
-                # Check if we can freeze more neurons
-                min_neurons = max(self.config.min_neurons, 
-                                int(stats["total_neurons"] * self.config.min_active_ratio))
-                can_freeze = stats["active_neurons"] > min_neurons
-                
-                if should_freeze and can_freeze:
-                    self.frozen_neurons[layer_name].add(neuron_id)
-                    stats["active_neurons"] -= 1
+        # Ensure minimum active neurons
+        if len(frozen) > stats["total_neurons"] - self.config.min_neurons:
+            # Keep top neurons by activation
+            active_count = stats["total_neurons"] - len(frozen)
+            if active_count < self.config.min_neurons:
+                top_indices = np.argsort(means)[-self.config.min_neurons:]
+                frozen = set(i for i in range(stats["total_neurons"]) if i not in top_indices)
+        
+        self.frozen_neurons[layer_name] = frozen
+        stats["active_neurons"] = stats["total_neurons"] - len(frozen)
     
     def optimize_layer(self, layer: torch.nn.Module, name: str, next_in_features: Optional[int] = None) -> torch.nn.Module:
         """Optimize a single layer by freezing inactive neurons"""
@@ -262,11 +245,27 @@ class DynamicNeuronOptimizer:
         
         # Run model to collect activation statistics
         device = next(model.parameters()).device
-        dummy_input = torch.randn(32, self.module_order[0][1].in_features, device=device)
         
+        # Create dummy input for BERT
+        if hasattr(model, "config") and hasattr(model.config, "vocab_size"):
+            # This is a BERT-like model
+            dummy_input = {
+                "input_ids": torch.randint(0, model.config.vocab_size, (32, 512), dtype=torch.long, device=device),
+                "attention_mask": torch.ones(32, 512, dtype=torch.long, device=device),
+                "token_type_ids": torch.zeros(32, 512, dtype=torch.long, device=device)
+            }
+        else:
+            # Default case: assume standard feed-forward network
+            first_layer = next(module for _, module in self.module_order if isinstance(module, torch.nn.Linear))
+            dummy_input = torch.randn(32, first_layer.in_features, device=device)
+        
+        # Collect activation statistics
         with torch.no_grad():
             for _ in range(self.config.window_size * 2):
-                model(dummy_input)
+                if isinstance(dummy_input, dict):
+                    model(**dummy_input)
+                else:
+                    model(dummy_input)
         
         # Remove hooks
         for hook in self.hooks:
