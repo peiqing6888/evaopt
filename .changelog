@@ -103,3 +103,32 @@
 - Dimension handling between layers
 - Activation statistics collection
 - Model structure preservation
+
+## [0.1.3] - 2024-04-06
+
+### Added
+- 🔧 Enhanced Error Handling
+  - Unified error handling with custom OptError type
+  - Improved error propagation in dynamic optimization
+  - Better error messages for layer operations
+  - Consistent error types across all modules
+
+### Changed
+- Removed Python bindings for pure Rust implementation
+- Improved parallel computation in dynamic.rs
+- Enhanced API clarity and documentation
+- Unified error handling across codebase
+
+### Performance
+- 🚀 Benchmark Results
+  - Forward pass: 560μs for 512 neurons
+  - Optimization: 403μs for 512 neurons
+  - Memory usage optimized for large models
+  - Improved parallel processing efficiency
+
+### Development
+- Added comprehensive benchmark suite
+  - Dynamic optimization benchmarks
+  - Matrix operation benchmarks
+  - Performance profiling tools
+  - Memory usage tracking
