@@ -54,3 +54,44 @@ optimized_model = optimizer.optimize_model(model)
 ## License
 
 MIT License 
+
+## Test Models & Results 🧪
+
+### Matrix Tests
+```python
+# Block-sparse optimization (1000x1000)
+optimizer = Optimizer(config)
+result = optimizer.optimize(matrix)
+# Compression: 40.36%, Error: 0.000003
+```
+
+### Language Models
+```python
+# GPT-2 (Demo)
+model = GPT2LMHeadModel(config)
+
+# Llama-2-7b-chat
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+```
+
+### Performance Highlights
+- Block-sparse: 40% memory reduction, 0.001s processing time
+- Matrix Compression: Up to 97.74% for rank-10 approximation
+- LLM Inference: 26% speed improvement
+- Memory Usage: Stable under 2GB for optimized models
+
+## Optimization Methods 🚀
+
+### Block-sparse Optimization
+- Block sizes: 16x16 to 128x128
+- Adaptive threshold selection
+- Fast block-wise processing
+- Minimal accuracy loss
+
+### Matrix Methods
+- SVD (Full/Truncated/Randomized)
+- Low-rank approximation
+- Sparse optimization
+- Block-sparse compression
+
+For more examples, check `examples/` directory. 

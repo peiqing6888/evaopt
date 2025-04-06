@@ -93,3 +93,41 @@ def optimize_memory(
     
     # Clear unused cache
     torch.cuda.empty_cache() if torch.cuda.is_available() else None 
+
+def quantize_tensor(tensor: np.ndarray, bits: int = 8) -> np.ndarray:
+    """
+    Quantize a tensor to reduced precision
+    
+    Args:
+        tensor: Input tensor to quantize
+        bits: Number of bits for quantization (1-8)
+        
+    Returns:
+        Quantized tensor
+    """
+    if not isinstance(tensor, (np.ndarray, torch.Tensor)):
+        raise TypeError("Input must be numpy array or torch tensor")
+        
+    if isinstance(tensor, torch.Tensor):
+        tensor = tensor.detach().cpu().numpy()
+        
+    if bits < 1 or bits > 8:
+        raise ValueError("bits must be between 1 and 8")
+        
+    # Get tensor range
+    min_val = tensor.min()
+    max_val = tensor.max()
+    
+    # Calculate scaling factor
+    scale = (max_val - min_val) / (2**bits - 1)
+    
+    # Quantize
+    quantized = np.round((tensor - min_val) / scale)
+    
+    # Clip to valid range
+    quantized = np.clip(quantized, 0, 2**bits - 1)
+    
+    # Scale back
+    dequantized = quantized * scale + min_val
+    
+    return dequantized.astype(tensor.dtype) 

@@ -1,15 +1,14 @@
 """
-Python implementation of the EvaOpt optimizer
+Optimization engine core
 """
 
-import torch
-import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
-
-from evaopt_core import optimize_tensors, get_matrix_stats as _get_matrix_stats
+import numpy as np
+import torch
 from ..utils.quantize import quantize_tensor
-from .dynamic import DynamicNeuronOptimizer, DynamicNeuronConfig
+from evaopt_core import optimize_matrix_in_chunks, ChunkConfig
+import sys
 
 @dataclass
 class BlockSparseConfig:
@@ -31,83 +30,103 @@ class ModelConfig:
     use_fp16: bool = True
     max_memory_gb: float = 24.0
     device: str = "mps"
-    block_sparse: Optional[BlockSparseConfig] = None  # Add block-sparse config
-    dynamic_neuron: Optional[DynamicNeuronConfig] = None  # Add dynamic neuron config
+    block_sparse: Optional[BlockSparseConfig] = None
 
 class Optimizer:
-    """EvaOpt optimizer"""
+    """High-performance model optimizer"""
     
     def __init__(self, config: Optional[ModelConfig] = None):
-        self.config = config or ModelConfig()
-        self.device = torch.device(self.config.device)
+        self.config = config or ModelConfig(model_type="default")
         self._setup_memory_pool()
-        
-        # Initialize dynamic neuron optimizer if configured
-        self.dynamic_optimizer = None
-        if self.config.matrix_method == "dynamic_neuron":
-            dynamic_config = self.config.dynamic_neuron or DynamicNeuronConfig()
-            self.dynamic_optimizer = DynamicNeuronOptimizer(dynamic_config)
     
     def _setup_memory_pool(self):
-        """Configure memory pool"""
-        if self.config.device == "mps":
-            torch.mps.empty_cache()
-            torch.mps.set_per_process_memory_fraction(
-                self.config.max_memory_gb / 32.0
-            )
+        """Setup memory management"""
+        self.memory_limit = int(self.config.max_memory_gb * 1024 * 1024 * 1024)  # Convert to bytes
+    
+    def optimize_matrix_in_chunks(self, matrix: np.ndarray, chunk_size: int = 1024,
+                                method: str = "truncated_svd", rank: Optional[int] = None,
+                                tolerance: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Optimize a matrix in chunks to support larger matrices with limited memory.
+        
+        Args:
+            matrix: Input matrix to optimize
+            chunk_size: Size of chunks to process
+            method: Optimization method to use
+                - "svd": Full SVD (best for small matrices)
+                - "truncated_svd": Truncated SVD using Krylov subspace methods (faster than full SVD)
+                - "randomized_svd": Randomized SVD algorithm (very fast, slightly less accurate)
+                - "low_rank": Low-rank approximation using alternating least squares
+                - "sparse": Sparse matrix optimization
+                - "block_sparse": Block-sparse matrix optimization
+                - "adaptive_low_rank": Automatically selects optimal rank based on error/compression trade-off
+                - "sparse_pattern": Optimizes based on common sparse patterns in the matrix
+                - "mixed_precision": Uses different precision levels for different matrix elements
+                - "tensor_core_svd": SVD optimized for tensor core hardware acceleration
+            rank: Target rank for low-rank methods (default: 10 or automatically determined)
+            tolerance: Error tolerance (default: 1e-6)
+        
+        Returns:
+            Dictionary containing:
+            - optimized_matrix: The optimized matrix
+            - processing_time: Total processing time in seconds
+            - memory_used: Peak memory usage in bytes
+        """
+        if matrix.ndim != 2:
+            raise ValueError("Input must be a 2D matrix")
+        
+        # Setup chunk config
+        chunk_config = ChunkConfig(
+            chunk_size=chunk_size,
+            use_parallel=self.config.use_parallel,
+            memory_limit=int(self.config.max_memory_gb * 1e9),  # Convert GB to bytes
+            prefetch_size=2,
+            use_simd=True
+        )
+        
+        # Apply optimization using core library
+        result = optimize_matrix_in_chunks(
+            matrix.astype(np.float32),
+            chunk_config,
+            method,
+            rank or self.config.matrix_rank,
+            tolerance or self.config.matrix_tolerance
+        )
+        
+        return result
     
     def optimize_model(self, model: torch.nn.Module) -> torch.nn.Module:
-        """Optimize model"""
-        # Check if using dynamic neuron optimization
-        if self.config.matrix_method == "dynamic_neuron" and self.dynamic_optimizer is not None:
-            return self.dynamic_optimizer.optimize_model(model)
-            
-        # Original optimization logic
+        """Optimize PyTorch model"""
         if self.config.use_fp16:
             model = model.half()
         
-        # 2. Move to target device
-        model = model.to(self.device)
+        # Move to target device
+        device = torch.device(self.config.device)
+        model = model.to(device)
         
-        # 3. Collect all parameters
+        # Collect all parameters
         tensors = {}
         for name, param in model.named_parameters():
-            # Ensure tensor is contiguous and convert to float32
             tensor = param.data.contiguous().cpu().float()
             tensors[name] = tensor.numpy()
         
-        # 4. Call Rust core for optimization
+        # Optimize tensors
         try:
-            config_dict = {
-                "sparsity_threshold": self.config.sparsity_threshold,
-                "quantization_bits": self.config.quantization_bits,
-                "use_parallel": self.config.use_parallel,
-            }
-            
-            if self.config.matrix_method:
-                config_dict.update({
-                    "matrix_method": self.config.matrix_method,
-                    "matrix_rank": self.config.matrix_rank or 10,
-                    "matrix_tolerance": self.config.matrix_tolerance or 1e-6,
-                })
-                
-                # Add block-sparse configuration if specified
-                if self.config.matrix_method == "block_sparse" and self.config.block_sparse:
-                    config_dict["block_sparse"] = {
-                        "block_size": self.config.block_sparse.block_size,
-                        "sparsity_threshold": self.config.block_sparse.sparsity_threshold,
-                        "min_block_norm": self.config.block_sparse.min_block_norm,
-                    }
-            
-            optimized_tensors = optimize_tensors(tensors, config_dict)
-            
-        except Exception as e:
-            print(f"Tensor states during optimization:")
+            optimized_tensors = {}
             for name, tensor in tensors.items():
-                print(f"{name}: shape={tensor.shape}, dtype={tensor.dtype}")
-            raise e
+                result = self.optimize_matrix_in_chunks(
+                    tensor,
+                    method=self.config.matrix_method or "truncated_svd",
+                    rank=self.config.matrix_rank,
+                    tolerance=self.config.matrix_tolerance
+                )
+                optimized_tensors[name] = result["optimized_matrix"]
         
-        # 5. Update model parameters
+        except Exception as e:
+            print(f"Error during optimization: {e}")
+            raise
+        
+        # Update model parameters
         with torch.no_grad():
             for name, tensor in optimized_tensors.items():
                 if name in dict(model.named_parameters()):
@@ -115,7 +134,7 @@ class Optimizer:
                     tensor = torch.from_numpy(tensor)
                     if self.config.use_fp16:
                         tensor = tensor.half()
-                    param.data.copy_(tensor.to(self.device))
+                    param.data.copy_(tensor.to(device))
         
         return model
     
@@ -128,105 +147,86 @@ class Optimizer:
                 "max_memory": self.config.max_memory_gb
             }
         return {}
-
-    def optimize(self, tensors: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Optimize tensors using configured methods.
-        
-        Args:
-            tensors: Dictionary of tensor names to numpy arrays
-            
-        Returns:
-            Dictionary of optimized tensors
-        """
-        config_dict = {
-            "sparsity_threshold": self.config.sparsity_threshold,
-            "quantization_bits": self.config.quantization_bits,
-            "use_parallel": self.config.use_parallel,
-        }
-        
-        if self.config.matrix_method:
-            config_dict.update({
-                "matrix_method": self.config.matrix_method,
-                "matrix_rank": self.config.matrix_rank or 10,
-                "matrix_tolerance": self.config.matrix_tolerance or 1e-6,
-            })
-            
-            # Add block-sparse configuration if specified
-            if self.config.matrix_method == "block_sparse" and self.config.block_sparse:
-                config_dict["block_sparse"] = {
-                    "block_size": self.config.block_sparse.block_size,
-                    "sparsity_threshold": self.config.block_sparse.sparsity_threshold,
-                    "min_block_norm": self.config.block_sparse.min_block_norm,
-                }
-        
-        return optimize_tensors(tensors, config_dict)
     
-    def get_matrix_stats(self, matrix: np.ndarray, method: str, 
+    def optimize(self, tensors: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Optimize tensors"""
+        optimized = {}
+        for name, tensor in tensors.items():
+            result = self.optimize_matrix_in_chunks(
+                tensor,
+                method=self.config.matrix_method or "truncated_svd",
+                rank=self.config.matrix_rank,
+                tolerance=self.config.matrix_tolerance
+            )
+            optimized[name] = result["optimized_matrix"]
+        return optimized
+    
+    def get_matrix_stats(self, matrix: np.ndarray, method: str,
                         rank: Optional[int] = None,
                         tolerance: Optional[float] = None,
                         block_sparse_config: Optional[BlockSparseConfig] = None) -> Dict[str, float]:
-        """Get statistics for matrix optimization.
+        """
+        Get optimization statistics for a matrix without modifying it.
         
         Args:
             matrix: Input matrix to analyze
-            method: Optimization method ("svd", "low_rank", "sparse", "block_sparse")
-            rank: Target rank for low-rank approximation
-            tolerance: Error tolerance threshold
-            block_sparse_config: Configuration for block-sparse optimization
-            
+            method: Optimization method to analyze
+                - "svd": Full SVD (best for small matrices)
+                - "truncated_svd": Truncated SVD using Krylov subspace methods (faster than full SVD)
+                - "randomized_svd": Randomized SVD algorithm (very fast, slightly less accurate)
+                - "low_rank": Low-rank approximation using alternating least squares
+                - "sparse": Sparse matrix optimization
+                - "block_sparse": Block-sparse matrix optimization
+                - "adaptive_low_rank": Automatically selects optimal rank based on error/compression trade-off
+                - "sparse_pattern": Optimizes based on common sparse patterns in the matrix
+                - "mixed_precision": Uses different precision levels for different matrix elements
+                - "tensor_core_svd": SVD optimized for tensor core hardware acceleration
+            rank: Target rank for low-rank methods (default: 10 or from config)
+            tolerance: Error tolerance (default: 1e-6 or from config)
+            block_sparse_config: Configuration for block-sparse optimization (if method is "block_sparse")
+        
         Returns:
-            Dictionary containing optimization statistics
+            Dictionary containing:
+            - compression_ratio: Compression ratio in percentage (higher is better)
+            - error: Relative error (lower is better)
+            - storage_size: Storage size in bytes after optimization
+            - original_size: Original storage size in bytes
         """
-        if not isinstance(matrix, np.ndarray) or matrix.ndim != 2:
-            raise ValueError("Input must be a 2D numpy array")
-        
-        # Convert method to lowercase for case-insensitive comparison
-        method = method.lower()
-        
-        # Map lowercase method to correct case
-        method_map = {
-            "svd": "svd",
-            "low_rank": "low_rank",
-            "sparse": "sparse",
-            "block_sparse": "block_sparse",
-            "truncated_svd": "truncated_svd",
-            "randomized_svd": "randomized_svd"
-        }
-        
-        if method not in method_map:
-            valid_methods = set(method_map.keys())
-            raise ValueError(f"Invalid method. Must be one of: {valid_methods}")
-        
-        # Create config dict for block-sparse method
-        config_dict = {
-            "matrix_method": method_map[method],
-            "matrix_rank": rank or 10,
-            "matrix_tolerance": tolerance or 1e-6,
-        }
-        
-        # Add block-sparse configuration if provided
-        if method == "block_sparse" and block_sparse_config:
-            config_dict["block_sparse"] = {
-                "block_size": block_sparse_config.block_size,
-                "sparsity_threshold": block_sparse_config.sparsity_threshold,
-                "min_block_norm": block_sparse_config.min_block_norm,
+        # Handle block_sparse method which needs special config
+        if method == "block_sparse" and block_sparse_config is not None:
+            # This is a workaround for now - we apply the optimization to get stats
+            # In the future, we should enhance the Rust API to provide a direct method
+            config = ModelConfig(
+                model_type="matrix",
+                matrix_method=method,
+                matrix_rank=rank or self.config.matrix_rank,
+                matrix_tolerance=tolerance or self.config.matrix_tolerance,
+                block_sparse=block_sparse_config
+            )
+            optimizer = Optimizer(config)
+            optimized = optimizer.optimize({"matrix": matrix})
+            
+            # Calculate statistics manually
+            original_size = matrix.nbytes
+            compressed_size = sys.getsizeof(optimized["matrix"]) 
+            compression_ratio = 100 * (1 - compressed_size / original_size)
+            
+            error = np.linalg.norm(matrix - optimized["matrix"]) / np.linalg.norm(matrix)
+            
+            return {
+                "compression_ratio": compression_ratio,
+                "error": error,
+                "storage_size": compressed_size,
+                "original_size": original_size
             }
-        
-        # Call Rust core for optimization
-        result = optimize_tensors({"input": matrix}, config_dict)
-        compressed = result["input"]
-        
-        # Calculate statistics
-        original_size = matrix.nbytes
-        compressed_size = compressed.nbytes
-        compression_ratio = 1.0 - (compressed_size / original_size)
-        error = np.linalg.norm(matrix - compressed) / np.linalg.norm(matrix)
-        
-        return {
-            "compression_ratio": compression_ratio,
-            "error": error,
-            "storage_size": compressed_size,
-        }
+        else:
+            # Use the core library function for other methods
+            return get_matrix_stats(
+                matrix.astype(np.float32),
+                method,
+                rank or self.config.matrix_rank,
+                tolerance or self.config.matrix_tolerance
+            )
 
 def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and normalize optimization configuration."""
@@ -303,7 +303,7 @@ def optimize_tensor(tensor: np.ndarray, config: Optional[Dict[str, Any]] = None)
     try:
         # Call Rust optimization function with single tensor
         tensors = {"input": tensor}
-        result = optimize_tensors(tensors, config)
+        result = optimize_matrix_in_chunks(tensors, config)
         
         # Extract result for single tensor
         compressed_result = {

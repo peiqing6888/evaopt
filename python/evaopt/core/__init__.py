@@ -1,11 +1,10 @@
 """
-EvaOpt - High-performance Local LLM Optimization Engine
+Core optimization engine components
 """
 
-from .core.optimizer import Optimizer, ModelConfig, BlockSparseConfig
+from .optimizer import Optimizer, ModelConfig, BlockSparseConfig
 from evaopt_core import optimize_matrix_in_chunks, ChunkConfig, get_matrix_stats, get_available_methods
 
-__version__ = "0.1.0"
 __all__ = [
     "Optimizer", 
     "ModelConfig", 
