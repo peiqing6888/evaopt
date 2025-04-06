@@ -1,3 +1,5 @@
 fn main() {
-    pyo3_build_config::add_extension_module_link_args();
+    // Configure build settings
+    println!("cargo:rerun-if-changed=src/");
+    println!("cargo:rerun-if-changed=build.rs");
 } 

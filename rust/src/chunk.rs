@@ -2,7 +2,6 @@ use ndarray::{Array2, Axis, s};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use rayon::prelude::*;
-use pyo3::prelude::*;
 use crate::memory::MemoryPool;
 
 #[derive(Debug, Clone)]
@@ -13,25 +12,16 @@ pub struct ChunkStats {
 }
 
 /// Configuration for chunk-based processing
-#[pyclass]
 #[derive(Debug, Clone)]
 pub struct ChunkConfig {
-    #[pyo3(get, set)]
     pub chunk_size: usize,
-    #[pyo3(get, set)]
     pub use_parallel: bool,
-    #[pyo3(get, set)]
     pub memory_limit: usize,
-    #[pyo3(get, set)]
     pub prefetch_size: usize,
-    #[pyo3(get, set)]
     pub use_simd: bool,
 }
 
-#[pymethods]
 impl ChunkConfig {
-    #[new]
-    #[pyo3(signature = (chunk_size=None, use_parallel=None, memory_limit=None, prefetch_size=None, use_simd=None))]
     pub fn new(
         chunk_size: Option<usize>,
         use_parallel: Option<bool>,

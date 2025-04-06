@@ -13,7 +13,15 @@ description = "High-performance LLM optimization engine core"
 
 [lib]
 name = "evaopt_core"
-crate-type = ["cdylib"]
+crate-type = ["lib"]
+
+[[bench]]
+name = "dynamic_optimization"
+harness = false
+
+[[bench]]
+name = "matrix_optimization"
+harness = false
 
 [dependencies]
 # Core functionality
@@ -33,13 +41,17 @@ rand_distr = "0.4"
 blas-src = { version = "0.9", features = ["openblas"] }
 openblas-src = { version = "0.10", features = ["system"] }
 
-# Python bindings
-pyo3 = { version = "0.19", features = ["extension-module"] }
-numpy = "0.19"
-
 # Memory management
 parking_lot = "0.12"
 crossbeam = "0.8"
 
-[build-dependencies]
-pyo3-build-config = "0.19"
+# Profiling and metrics
+tracing = "0.1"
+metrics = "0.21"
+
+# Compression and optimization
+zstd = "0.13"
+half = "2.3"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
