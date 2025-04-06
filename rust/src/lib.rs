@@ -1,13 +1,23 @@
 use pyo3::prelude::*;
-use numpy::{PyArray1, PyArray2, IntoPyArray};
-use ndarray::{Array1, Array2, Axis};
+use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::wrap_pyfunction;
+use pyo3::Python;
+use numpy::{PyArray1, PyArray2, IntoPyArray, PyReadonlyArray2};
+use ndarray::{Array1, Array2, Axis, ShapeBuilder};
 use std::collections::HashMap;
 
 mod tensor;
 mod memory;
 mod matrix;
+mod chunk;
+mod dynamic;
 
 use matrix::{MatrixConfig, DecompositionMethod, optimize_matrix, BlockSparseConfig};
+use chunk::{ChunkConfig, ChunkManager};
+use memory::MemoryPool;
+use std::sync::Arc;
+use parking_lot::RwLock;
+use dynamic::{DynamicOptimizer, NeuronStats};
 
 /// Tensor optimization configuration
 #[derive(Debug, Clone)]
@@ -203,6 +213,7 @@ fn parse_config(py: Python, config: Option<HashMap<String, PyObject>>) -> PyResu
 
 /// Get optimization statistics for matrix
 #[pyfunction]
+#[pyo3(name = "get_matrix_stats")]
 fn get_matrix_stats(
     py: Python,
     matrix: &PyArray2<f32>,
@@ -210,87 +221,274 @@ fn get_matrix_stats(
     rank: Option<usize>,
     tolerance: Option<f32>,
 ) -> PyResult<HashMap<String, PyObject>> {
+    // Convert input to ndarray
     let array = matrix.readonly();
     let shape = (array.shape()[0], array.shape()[1]);
-    let matrix = Array2::from_shape_vec(shape, array.as_slice()?.to_vec())
+    let matrix_data = Array2::from_shape_vec(shape, array.as_slice()?.to_vec())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     
-    let config = match method.to_lowercase().as_str() {
-        "svd" => MatrixConfig {
-            method: DecompositionMethod::SVD,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: None,
+    // Create matrix configuration
+    let matrix_config = MatrixConfig {
+        method: match method {
+            "svd" => DecompositionMethod::SVD,
+            "low_rank" => DecompositionMethod::LowRank,
+            "sparse" => DecompositionMethod::Sparse,
+            "truncated_svd" => DecompositionMethod::TruncatedSVD,
+            "randomized_svd" => DecompositionMethod::RandomizedSVD,
+            "block_sparse" => DecompositionMethod::BlockSparse,
+            "adaptive_low_rank" => DecompositionMethod::AdaptiveLowRank,
+            "sparse_pattern" => DecompositionMethod::SparsePattern,
+            "mixed_precision" => DecompositionMethod::MixedPrecision,
+            "tensor_core_svd" => DecompositionMethod::TensorCoreSVD,
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unsupported method: {}", method)
+            )),
         },
-        "low_rank" => MatrixConfig {
-            method: DecompositionMethod::LowRank,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: None,
-        },
-        "sparse" => MatrixConfig {
-            method: DecompositionMethod::Sparse,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: None,
-        },
-        "block_sparse" => MatrixConfig {
-            method: DecompositionMethod::BlockSparse,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: Some(BlockSparseConfig::default()),
-        },
-        "truncated_svd" => MatrixConfig {
-            method: DecompositionMethod::TruncatedSVD,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: None,
-        },
-        "randomized_svd" => MatrixConfig {
-            method: DecompositionMethod::RandomizedSVD,
-            rank: rank.unwrap_or(10),
-            tolerance: tolerance.unwrap_or(1e-6),
-            use_parallel: true,
-            oversampling: 5,
-            power_iterations: 2,
-            block_sparse: None,
-        },
-        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid method")),
+        rank: rank.unwrap_or(10),
+        tolerance: tolerance.unwrap_or(1e-6),
+        use_parallel: true,
+        oversampling: 5,
+        power_iterations: 2,
+        block_sparse: None,
     };
     
-    match optimize_matrix(&matrix, &config) {
-        Ok(result) => {
-            let mut stats = HashMap::new();
-            stats.insert("compression_ratio".to_string(), result.compression_ratio.to_object(py));
-            stats.insert("error".to_string(), result.error.to_object(py));
-            stats.insert("storage_size".to_string(), result.storage_size.to_object(py));
-            Ok(stats)
-        },
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+    // Optimize matrix to calculate stats
+    let result = optimize_matrix(&matrix_data, &matrix_config)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
             format!("Matrix optimization failed: {}", e)
-        ))
-    }
+        ))?;
+    
+    // Create result dictionary
+    let mut stats = HashMap::new();
+    stats.insert("compression_ratio".to_string(), (result.compression_ratio * 100.0).to_object(py));
+    stats.insert("error".to_string(), result.error.to_object(py));
+    stats.insert("storage_size".to_string(), result.storage_size.to_object(py));
+    stats.insert("original_size".to_string(), (matrix_data.len() * std::mem::size_of::<f32>()).to_object(py));
+    
+    Ok(stats)
+}
+
+/// Optimize matrix in chunks
+#[pyfunction]
+#[pyo3(name = "optimize_matrix_in_chunks")]
+pub fn optimize_matrix_in_chunks(
+    py: Python,
+    array: PyReadonlyArray2<f32>,
+    config: ChunkConfig,
+    method: &str,
+    rank: Option<usize>,
+    tolerance: Option<f32>
+) -> PyResult<HashMap<String, PyObject>> {
+    // Create memory pool
+    let memory_pool = Arc::new(RwLock::new(MemoryPool::new(config.memory_limit)));
+    
+    // Create chunk manager
+    let manager = ChunkManager::new(config.clone(), memory_pool);
+    
+    // Convert input array to ndarray
+    let shape = (array.shape()[0], array.shape()[1]);
+    let mut matrix_data = Array2::from_shape_vec(shape, array.as_slice()?.to_vec())
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    
+    // Create matrix config
+    let matrix_config = MatrixConfig {
+        method: match method {
+            "svd" => DecompositionMethod::SVD,
+            "low_rank" => DecompositionMethod::LowRank,
+            "sparse" => DecompositionMethod::Sparse,
+            "truncated_svd" => DecompositionMethod::TruncatedSVD,
+            "randomized_svd" => DecompositionMethod::RandomizedSVD,
+            "block_sparse" => DecompositionMethod::BlockSparse,
+            "adaptive_low_rank" => DecompositionMethod::AdaptiveLowRank,
+            "sparse_pattern" => DecompositionMethod::SparsePattern,
+            "mixed_precision" => DecompositionMethod::MixedPrecision,
+            "tensor_core_svd" => DecompositionMethod::TensorCoreSVD,
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unsupported method: {}", method)
+            )),
+        },
+        rank: rank.unwrap_or(10),
+        tolerance: tolerance.unwrap_or(1e-6),
+        use_parallel: config.use_parallel,
+        oversampling: 5,
+        power_iterations: 2,
+        block_sparse: None,
+    };
+    
+    // Process matrix in chunks
+    let stats = manager.process_matrix(&mut matrix_data, |chunk| {
+        match optimize_matrix(chunk, &matrix_config) {
+            Ok(result) => {
+                chunk.assign(&result.compressed);
+                Ok(())
+            },
+            Err(e) => Err(e.to_string()),
+        }
+    }).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+    
+    // Calculate total stats
+    let total_time: f64 = stats.iter().map(|s| s.processing_time).sum();
+    let total_memory: usize = stats.iter().map(|s| s.memory_used).max().unwrap_or(0);
+    
+    // Create result dictionary
+    let mut result = HashMap::new();
+    result.insert("optimized_matrix".to_string(), matrix_data.into_pyarray(py).to_object(py));
+    result.insert("processing_time".to_string(), total_time.to_object(py));
+    result.insert("memory_used".to_string(), total_memory.to_object(py));
+    
+    Ok(result)
+}
+
+/// Get information about available optimization methods
+#[pyfunction]
+fn get_available_methods(py: Python) -> PyResult<HashMap<String, PyObject>> {
+    let mut methods = HashMap::new();
+    
+    // Add method info
+    let add_method = |methods: &mut HashMap<String, PyObject>, name: &str, 
+                     description: &str, best_for: &str, params: Vec<(&str, &str)>| {
+        let method_info = PyDict::new(py);
+        method_info.set_item("description", description)?;
+        method_info.set_item("best_for", best_for)?;
+        
+        let params_dict = PyDict::new(py);
+        for (param_name, param_desc) in params {
+            params_dict.set_item(param_name, param_desc)?;
+        }
+        method_info.set_item("parameters", params_dict)?;
+        
+        methods.insert(name.to_string(), method_info.to_object(py));
+        Ok::<(), PyErr>(())
+    };
+    
+    // Add each method
+    add_method(&mut methods, "svd", 
+        "Full Singular Value Decomposition", 
+        "Small to medium matrices with high accuracy requirements",
+        vec![
+            ("rank", "Number of singular values to keep"),
+            ("tolerance", "Error tolerance"),
+        ])?;
+        
+    add_method(&mut methods, "truncated_svd", 
+        "Truncated SVD using Krylov subspace methods", 
+        "Large matrices where full SVD is too expensive",
+        vec![
+            ("rank", "Number of singular values to keep"),
+            ("tolerance", "Error tolerance"),
+        ])?;
+    
+    add_method(&mut methods, "randomized_svd", 
+        "Randomized SVD algorithm", 
+        "Very large matrices, faster but less accurate than truncated SVD",
+        vec![
+            ("rank", "Number of singular values to keep"),
+            ("tolerance", "Error tolerance"),
+            ("oversampling", "Oversampling parameter for randomized algorithm"),
+            ("power_iterations", "Number of power iterations for accuracy"),
+        ])?;
+    
+    add_method(&mut methods, "low_rank", 
+        "Low rank approximation using alternating least squares", 
+        "Matrices with known low-rank structure",
+        vec![
+            ("rank", "Target rank for approximation"),
+            ("tolerance", "Error tolerance"),
+        ])?;
+    
+    add_method(&mut methods, "sparse", 
+        "Sparse matrix optimization", 
+        "Matrices with many near-zero elements",
+        vec![
+            ("tolerance", "Sparsity threshold (elements below are set to zero)"),
+        ])?;
+    
+    add_method(&mut methods, "block_sparse", 
+        "Block-sparse matrix optimization", 
+        "Matrices with block structure",
+        vec![
+            ("block_size", "Size of blocks (e.g., 16, 32, 64)"),
+            ("sparsity_threshold", "Threshold for block elimination"),
+            ("min_block_norm", "Minimum block norm to preserve"),
+        ])?;
+    
+    add_method(&mut methods, "adaptive_low_rank", 
+        "Adaptive low-rank approximation that automatically selects optimal rank", 
+        "When optimal rank is unknown",
+        vec![
+            ("max_rank", "Maximum rank to consider"),
+            ("error_threshold", "Target error threshold"),
+            ("min_compression_ratio", "Minimum acceptable compression ratio"),
+        ])?;
+    
+    add_method(&mut methods, "sparse_pattern", 
+        "Optimization based on identifying common sparse patterns", 
+        "Structured sparsity in neural networks",
+        vec![
+            ("global_threshold", "Global sparsity threshold"),
+            ("pattern_threshold", "Pattern similarity threshold"),
+            ("block_size", "Analysis block size"),
+        ])?;
+    
+    add_method(&mut methods, "mixed_precision", 
+        "Mixed precision optimization using different bit widths", 
+        "Trading precision for memory savings",
+        vec![
+            ("high_precision_threshold", "Threshold for high precision elements"),
+            ("mid_precision_threshold", "Threshold for medium precision elements"),
+            ("high_precision_bits", "Bits for high precision (default: 32)"),
+            ("mid_precision_bits", "Bits for medium precision (default: 16)"),
+            ("low_precision_bits", "Bits for low precision (default: 8)"),
+        ])?;
+    
+    add_method(&mut methods, "tensor_core_svd", 
+        "SVD optimized for tensor core hardware acceleration", 
+        "Hardware with tensor cores (Apple Silicon, NVIDIA GPUs)",
+        vec![
+            ("tile_size", "Tile size for tensor core processing"),
+            ("precision", "Working precision (16 or 32)"),
+            ("max_iter", "Maximum iterations for power method"),
+            ("use_fp16", "Whether to use FP16 acceleration"),
+        ])?;
+    
+    Ok(methods)
 }
 
 /// Initialize Python module
 #[pymodule]
-fn evaopt_core(_py: Python, m: &PyModule) -> PyResult<()> {
+#[pyo3(name = "evaopt_core")]
+fn init_module(_py: Python, m: &PyModule) -> PyResult<()> {
+    // Register ChunkConfig class
+    m.add_class::<ChunkConfig>()?;
+    m.add_class::<DynamicOptimizer>()?;
+    m.add_class::<NeuronStats>()?;
+
+    // Register functions
     m.add_function(wrap_pyfunction!(optimize_tensors, m)?)?;
     m.add_function(wrap_pyfunction!(get_matrix_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(optimize_matrix_in_chunks, m)?)?;
+    m.add_function(wrap_pyfunction!(get_available_methods, m)?)?;
+
+    // Add module docstring
+    let dict = m.dict();
+    dict.set_item("__doc__", "High-performance optimization engine core")?;
+
+    // Add version
+    dict.set_item("__version__", "0.1.0")?;
+
+    // Add all exported items
+    dict.set_item(
+        "__all__",
+        vec![
+            "optimize_matrix_in_chunks",
+            "ChunkConfig",
+            "DynamicOptimizer",
+            "NeuronStats",
+            "optimize_tensors",
+            "get_matrix_stats",
+            "get_available_methods",
+        ],
+    )?;
+
     Ok(())
-} 
+}

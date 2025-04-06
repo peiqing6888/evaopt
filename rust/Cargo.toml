@@ -42,4 +42,4 @@ parking_lot = "0.12"
 crossbeam = "0.8"
 
 [build-dependencies]
-pyo3-build-config = "0.20"
+pyo3-build-config = "0.19"
