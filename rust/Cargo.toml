@@ -1,8 +1,10 @@
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+debug = false
+strip = true
 
 [package]
 name = "evaopt-core"
@@ -32,11 +34,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Numerical computation and optimization
-ndarray = { version = "0.15", features = ["rayon"] }
+ndarray = { version = "0.15", features = ["rayon", "serde"] }
 ndarray-linalg = { version = "0.16", features = ["openblas-system"] }
-rayon = "1.7"
+rayon = "1.8"
 num-traits = "0.2"
-rand = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
 blas-src = { version = "0.9", features = ["openblas"] }
 openblas-src = { version = "0.10", features = ["system"] }
@@ -46,12 +48,12 @@ parking_lot = "0.12"
 crossbeam = "0.8"
 
 # Profiling and metrics
-tracing = "0.1"
-metrics = "0.21"
+tracing = { version = "0.1", features = ["attributes"] }
+metrics = { version = "0.21", features = ["std"] }
 
 # Compression and optimization
-zstd = "0.13"
-half = "2.3"
+zstd = { version = "0.13", features = ["zstdmt"] }
+half = { version = "2.3", features = ["std"] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports", "async_futures"] }
