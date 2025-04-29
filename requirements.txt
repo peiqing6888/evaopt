@@ -1,9 +1,6 @@
 # 核心依賴
-# 建议使用以下命令安装 PyTorch:
-# pip install torch -i https://pypi.tuna.tsinghua.edu.cn/simple
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch>=2.2.0; platform_system == "Darwin" and platform_machine == "arm64"  # For M1/M2/M3 Macs
 numpy>=1.26.0
+torch>=2.2.0
 transformers>=4.37.0
 accelerate>=0.27.0
 bitsandbytes>=0.41.1

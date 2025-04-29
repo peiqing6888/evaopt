@@ -4,8 +4,7 @@ Dynamic neuron optimization interface
 
 import torch
 import logging
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from evaopt_core import DynamicOptimizer as RustDynamicOptimizer
 
@@ -16,45 +15,24 @@ class DynamicConfig:
     min_active_ratio: float = 0.5  # Keep at least 50% of neurons
     update_frequency: int = 5  # Update more frequently
     ema_alpha: float = 0.2  # Faster updates for EMA
-    cache_size: int = 1000  # Size of activation cache
 
 class DynamicOptimizer:
     """High-performance dynamic neuron optimizer"""
     
     def __init__(self, config: Optional[DynamicConfig] = None):
         self.config = config or DynamicConfig()
-        try:
-            self.optimizer = RustDynamicOptimizer(
-                activation_threshold=self.config.activation_threshold,
-                min_active_ratio=self.config.min_active_ratio,
-                update_frequency=self.config.update_frequency,
-                ema_alpha=self.config.ema_alpha
-            )
-        except Exception as e:
-            logging.error(f"Failed to initialize RustDynamicOptimizer: {e}")
-            raise
-            
+        self.optimizer = RustDynamicOptimizer(
+            activation_threshold=self.config.activation_threshold,
+            min_active_ratio=self.config.min_active_ratio,
+            update_frequency=self.config.update_frequency,
+            ema_alpha=self.config.ema_alpha
+        )
         self.hooks = []
         self.layer_names = {}
         self.step = 0
-        self._activation_cache = {}  # Cache for layer activations
         
-    def _update_cache(self, layer_name: str, activation: np.ndarray) -> None:
-        """Update activation cache for a layer with LRU policy"""
-        if layer_name not in self._activation_cache:
-            self._activation_cache[layer_name] = []
-        
-        cache = self._activation_cache[layer_name]
-        cache.append(activation)
-        
-        if len(cache) > self.config.cache_size:
-            cache.pop(0)  # Remove oldest entry
-            
     def register_hooks(self, model: torch.nn.Module) -> None:
         """Register forward hooks for all linear layers"""
-        if not model:
-            raise ValueError("Model cannot be None")
-            
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.Linear):
                 self.layer_names[module] = name
@@ -62,12 +40,7 @@ class DynamicOptimizer:
                 def hook(mod, inp, out, layer_name=name):
                     if isinstance(out, tuple):
                         out = out[0]
-                    try:
-                        activation = out.detach().cpu().numpy()
-                        self._update_cache(layer_name, activation)
-                        self.optimizer.update_activations(layer_name, activation)
-                    except Exception as e:
-                        logging.warning(f"Failed to process activations for layer {layer_name}: {e}")
+                    self.optimizer.update_activations(layer_name, out.detach().cpu().numpy())
                     
                 handle = module.register_forward_hook(hook)
                 self.hooks.append(handle)
@@ -80,30 +53,23 @@ class DynamicOptimizer:
     
     def optimize_layer(self, name: str, layer: torch.nn.Linear) -> torch.nn.Linear:
         """Optimize a single layer by removing inactive neurons"""
-        if not isinstance(layer, torch.nn.Linear):
-            raise TypeError(f"Expected torch.nn.Linear, got {type(layer)}")
+        weights = layer.weight.detach().cpu().numpy()
+        bias = layer.bias.detach().cpu().numpy() if layer.bias is not None else None
+        
+        optimized_weights, optimized_bias = self.optimizer.optimize_layer(name, weights, bias)
+        
+        optimized_layer = torch.nn.Linear(
+            in_features=layer.in_features,
+            out_features=len(optimized_weights),
+            bias=layer.bias is not None,
+            device=layer.weight.device
+        )
+        
+        optimized_layer.weight.data = torch.from_numpy(optimized_weights).to(layer.weight.device)
+        if optimized_bias is not None:
+            optimized_layer.bias.data = torch.from_numpy(optimized_bias).to(layer.bias.device)
             
-        try:
-            weights = layer.weight.detach().cpu().numpy()
-            bias = layer.bias.detach().cpu().numpy() if layer.bias is not None else None
-            
-            optimized_weights, optimized_bias = self.optimizer.optimize_layer(name, weights, bias)
-            
-            optimized_layer = torch.nn.Linear(
-                in_features=layer.in_features,
-                out_features=len(optimized_weights),
-                bias=layer.bias is not None,
-                device=layer.weight.device
-            )
-            
-            optimized_layer.weight.data = torch.from_numpy(optimized_weights).to(layer.weight.device)
-            if optimized_bias is not None:
-                optimized_layer.bias.data = torch.from_numpy(optimized_bias).to(layer.bias.device)
-                
-            return optimized_layer
-        except Exception as e:
-            logging.error(f"Failed to optimize layer {name}: {e}")
-            raise
+        return optimized_layer
     
     def optimize_model(self, model: torch.nn.Module) -> torch.nn.Module:
         """Optimize entire model by removing inactive neurons"""
