@@ -2,6 +2,7 @@ use ndarray::{Array2, Array1, Axis, s};
 use ndarray_linalg::{SVD, Solve, Inverse};
 use rand::Rng;
 use thiserror::Error;
+use std::simd::{f32x8, SimdFloat};
 
 /// Matrix optimization errors
 #[derive(Error, Debug)]
@@ -106,6 +107,45 @@ fn get_compression_stats(
     
     let ratio = 1.0 - (compressed_size as f32 / original_size as f32);
     (ratio, compressed_size)
+}
+
+/// Optimized frobenius norm calculation using SIMD
+#[inline]
+fn frobenius_norm_simd<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
+where
+    S: ndarray::Data<Elem = f32>,
+    D: ndarray::Dimension,
+{
+    let data = array.as_slice().unwrap();
+    let mut sum = f32x8::splat(0.0);
+    
+    // Process 8 elements at a time using SIMD
+    for chunk in data.chunks_exact(8) {
+        let v = f32x8::from_slice(chunk);
+        sum += v * v;
+    }
+    
+    // Handle remaining elements
+    let mut final_sum = sum.reduce_sum();
+    for &x in data.chunks_exact(8).remainder() {
+        final_sum += x * x;
+    }
+    
+    final_sum.sqrt()
+}
+
+/// Calculate frobenius norm with automatic SIMD optimization
+#[inline]
+fn frobenius_norm<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
+where
+    S: ndarray::Data<Elem = f32>,
+    D: ndarray::Dimension,
+{
+    if cfg!(target_feature = "avx2") {
+        frobenius_norm_simd(array)
+    } else {
+        array.iter().fold(0.0, |acc, &x| acc + x * x).sqrt()
+    }
 }
 
 /// Optimize matrix using SVD decomposition
@@ -447,15 +487,6 @@ pub fn optimize_block_sparse(matrix: &Array2<f32>, config: &MatrixConfig) -> Res
         error,
         storage_size,
     })
-}
-
-/// Calculate Frobenius norm of a matrix or vector
-fn frobenius_norm<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
-where
-    S: ndarray::Data<Elem = f32>,
-    D: ndarray::Dimension,
-{
-    array.iter().map(|&x| x * x).sum::<f32>().sqrt()
 }
 
 /// Optimization configuration for adaptive low-rank approximation

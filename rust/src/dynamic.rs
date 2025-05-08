@@ -5,6 +5,19 @@ use rayon::prelude::*;
 use crate::OptError;
 use crate::Result;
 
+// Cache line size in bytes (typical for most modern CPUs)
+const CACHE_LINE_SIZE: usize = 64;
+// L1 cache size (conservative estimate)
+const L1_CACHE_SIZE: usize = 32 * 1024;
+
+/// Calculate optimal chunk size based on data dimensions and CPU cache
+#[inline]
+fn determine_optimal_chunk_size(rows: usize, cols: usize) -> usize {
+    let elements_per_cache_line = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
+    let rows_per_chunk = L1_CACHE_SIZE / (cols * std::mem::size_of::<f32>());
+    rows_per_chunk.max(elements_per_cache_line).min(rows)
+}
+
 #[derive(Clone, Debug)]
 pub struct NeuronStats {
     mean_activation: f32,
@@ -60,23 +73,38 @@ impl DynamicOptimizer {
         let mut means = vec![0.0f32; n_neurons];
         let mut peaks = vec![0.0f32; n_neurons];
 
-        // 按批次处理数据以减少内存使用
-        let chunk_size = 64;
-        for chunk_start in (0..activations.shape()[0]).step_by(chunk_size) {
-            let chunk_end = (chunk_start + chunk_size).min(activations.shape()[0]);
-            let chunk = activations.slice(s![chunk_start..chunk_end, ..]);
-
-            chunk.axis_iter(Axis(0)).for_each(|row| {
-                for (i, &val) in row.iter().enumerate() {
-                    let abs_val = val.abs();
-                    means[i] += abs_val;
-                    peaks[i] = peaks[i].max(abs_val);
-                }
+        // 使用自适应块大小进行批处理
+        let chunk_size = determine_optimal_chunk_size(activations.shape()[0], n_neurons);
+        
+        // 并行处理数据块
+        activations.axis_chunks_iter(Axis(0), chunk_size)
+            .into_par_iter()
+            .for_each(|chunk| {
+                let mut local_means = vec![0.0f32; n_neurons];
+                let mut local_peaks = vec![0.0f32; n_neurons];
+                
+                chunk.axis_iter(Axis(0)).for_each(|row| {
+                    for (i, &val) in row.iter().enumerate() {
+                        let abs_val = val.abs();
+                        local_means[i] += abs_val;
+                        local_peaks[i] = local_peaks[i].max(abs_val);
+                    }
+                });
+                
+                // 合并结果到全局数组
+                means.par_iter_mut().zip(local_means.par_iter())
+                    .for_each(|(mean, &local)| {
+                        *mean += local;
+                    });
+                    
+                peaks.par_iter_mut().zip(local_peaks.par_iter())
+                    .for_each(|(peak, &local)| {
+                        *peak = peak.max(local);
+                    });
             });
-        }
 
         // 计算最终的平均值
-        means.iter_mut().for_each(|mean| {
+        means.par_iter_mut().for_each(|mean| {
             *mean /= batch_size;
         });
 
