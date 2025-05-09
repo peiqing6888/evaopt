@@ -70,13 +70,12 @@ impl DynamicOptimizer {
         let batch_size = activations.shape()[0] as f32;
 
         // 使用向量存储计算结果
-        let mut means = vec![0.0f32; n_neurons];
-        let mut peaks = vec![0.0f32; n_neurons];
-
-        // 使用自适应块大小进行批处理
         let chunk_size = determine_optimal_chunk_size(activations.shape()[0], n_neurons);
         
         // 并行处理数据块
+        let means = Arc::new(Mutex::new(vec![0.0f32; n_neurons]));
+        let peaks = Arc::new(Mutex::new(vec![0.0f32; n_neurons]));
+
         activations.axis_chunks_iter(Axis(0), chunk_size)
             .into_par_iter()
             .for_each(|chunk| {
@@ -92,43 +91,47 @@ impl DynamicOptimizer {
                 });
                 
                 // 合并结果到全局数组
-                means.par_iter_mut().zip(local_means.par_iter())
-                    .for_each(|(mean, &local)| {
-                        *mean += local;
-                    });
+                {
+                    let mut means_guard = means.lock().unwrap();
+                    let mut peaks_guard = peaks.lock().unwrap();
                     
-                peaks.par_iter_mut().zip(local_peaks.par_iter())
-                    .for_each(|(peak, &local)| {
-                        *peak = peak.max(local);
-                    });
+                    for i in 0..n_neurons {
+                        means_guard[i] += local_means[i];
+                        peaks_guard[i] = peaks_guard[i].max(local_peaks[i]);
+                    }
+                }
             });
 
         // 计算最终的平均值
-        means.par_iter_mut().for_each(|mean| {
-            *mean /= batch_size;
-        });
-
-        let mut stats = self.neuron_stats.lock()
-            .map_err(|e| OptError::Internal(e.to_string()))?;
-        let layer_stats = stats
-            .entry(layer_name.to_string())
-            .or_insert_with(|| vec![NeuronStats::new(); n_neurons]);
-
-        // 只在更新频率匹配时更新统计信息
-        if *step % self.update_frequency == 0 {
-            layer_stats.par_iter_mut().enumerate().for_each(|(i, stat)| {
-                if !stat.frozen {
-                    stat.mean_activation = stat.mean_activation * (1.0 - self.ema_alpha)
-                        + means[i] * self.ema_alpha;
-                    stat.peak_activation = stat.peak_activation.max(peaks[i]);
-                    
-                    let is_active = stat.mean_activation >= self.activation_threshold
-                        || stat.peak_activation >= self.activation_threshold * 2.0;
-                    stat.active_ratio = stat.active_ratio * (1.0 - self.ema_alpha)
-                        + if is_active { 1.0 } else { 0.0 } * self.ema_alpha;
-                    stat.last_update = *step;
-                }
+        {
+            let mut means_guard = means.lock().unwrap();
+            means_guard.par_iter_mut().for_each(|mean| {
+                *mean /= batch_size;
             });
+            
+            let mut stats = self.neuron_stats.lock()
+                .map_err(|e| OptError::Internal(e.to_string()))?;
+            let layer_stats = stats
+                .entry(layer_name.to_string())
+                .or_insert_with(|| vec![NeuronStats::new(); n_neurons]);
+
+            // 只在更新频率匹配时更新统计信息
+            if *step % self.update_frequency == 0 {
+                let peaks_guard = peaks.lock().unwrap();
+                layer_stats.par_iter_mut().enumerate().for_each(|(i, stat)| {
+                    if !stat.frozen {
+                        stat.mean_activation = stat.mean_activation * (1.0 - self.ema_alpha)
+                            + means_guard[i] * self.ema_alpha;
+                        stat.peak_activation = stat.peak_activation.max(peaks_guard[i]);
+                        
+                        let is_active = stat.mean_activation >= self.activation_threshold
+                            || stat.peak_activation >= self.activation_threshold * 2.0;
+                        stat.active_ratio = stat.active_ratio * (1.0 - self.ema_alpha)
+                            + if is_active { 1.0 } else { 0.0 } * self.ema_alpha;
+                        stat.last_update = *step;
+                    }
+                });
+            }
         }
 
         *step += 1;

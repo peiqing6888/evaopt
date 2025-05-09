@@ -42,7 +42,6 @@ rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
 blas-src = { version = "0.9", features = ["openblas"] }
 openblas-src = { version = "0.10", features = ["system"] }
-packed_simd = { version = "0.3", package = "packed_simd_2" }
 
 # Memory management
 parking_lot = "0.12"
@@ -50,7 +49,7 @@ crossbeam = "0.8"
 
 # Profiling and metrics
 tracing = { version = "0.1", features = ["attributes"] }
-metrics = { version = "0.21", features = ["std"] }
+metrics = "0.21"
 
 # Compression and optimization
 zstd = { version = "0.13", features = ["zstdmt"] }
@@ -60,5 +59,4 @@ half = { version = "2.3", features = ["std"] }
 criterion = { version = "0.5", features = ["html_reports", "async_futures"] }
 
 [features]
-default = ["simd"]
-simd = []
+default = []
