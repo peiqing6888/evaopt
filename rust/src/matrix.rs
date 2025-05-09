@@ -108,6 +108,16 @@ fn get_compression_stats(
     (ratio, compressed_size)
 }
 
+/// Calculate frobenius norm
+#[inline]
+fn frobenius_norm<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
+where
+    S: ndarray::Data<Elem = f32>,
+    D: ndarray::Dimension,
+{
+    array.iter().fold(0.0, |acc, &x| acc + x * x).sqrt()
+}
+
 /// Optimize matrix using SVD decomposition
 pub fn optimize_svd(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<OptimizationResult, MatrixError> {
     let (nrows, ncols) = matrix.dim();
@@ -447,15 +457,6 @@ pub fn optimize_block_sparse(matrix: &Array2<f32>, config: &MatrixConfig) -> Res
         error,
         storage_size,
     })
-}
-
-/// Calculate Frobenius norm of a matrix or vector
-fn frobenius_norm<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
-where
-    S: ndarray::Data<Elem = f32>,
-    D: ndarray::Dimension,
-{
-    array.iter().map(|&x| x * x).sum::<f32>().sqrt()
 }
 
 /// Optimization configuration for adaptive low-rank approximation
