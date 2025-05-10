@@ -2,6 +2,8 @@ use ndarray::{Array2, Array1, Axis, s};
 use ndarray_linalg::{SVD, Solve, Inverse};
 use rand::Rng;
 use thiserror::Error;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 /// Matrix optimization errors
 #[derive(Error, Debug)]
@@ -108,14 +110,115 @@ fn get_compression_stats(
     (ratio, compressed_size)
 }
 
-/// Calculate frobenius norm
+/// Calculate frobenius norm with SIMD optimization
 #[inline]
 fn frobenius_norm<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
 where
     S: ndarray::Data<Elem = f32>,
     D: ndarray::Dimension,
 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { frobenius_norm_avx2(array) };
+        }
+    }
     array.iter().fold(0.0, |acc, &x| acc + x * x).sqrt()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn frobenius_norm_avx2<S, D>(array: &ndarray::ArrayBase<S, D>) -> f32 
+where
+    S: ndarray::Data<Elem = f32>,
+    D: ndarray::Dimension,
+{
+    let mut sum = _mm256_setzero_ps();
+    let data = array.as_slice().unwrap();
+    let chunks = data.chunks_exact(8);
+    let remainder = chunks.remainder();
+    
+    for chunk in chunks {
+        let chunk_ptr = chunk.as_ptr() as *const __m256;
+        let vals = _mm256_loadu_ps(chunk_ptr as *const f32);
+        sum = _mm256_fmadd_ps(vals, vals, sum);
+    }
+    
+    let mut result = 0.0;
+    let mut temp = [0.0f32; 8];
+    _mm256_storeu_ps(temp.as_mut_ptr(), sum);
+    result += temp.iter().sum::<f32>();
+    
+    for &x in remainder {
+        result += x * x;
+    }
+    
+    result.sqrt()
+}
+
+/// Optimized matrix multiplication for small matrices
+#[inline]
+fn matrix_multiply_small<S1, S2>(a: &ndarray::ArrayBase<S1, ndarray::Ix2>, b: &ndarray::ArrayBase<S2, ndarray::Ix2>) -> Array2<f32>
+where
+    S1: ndarray::Data<Elem = f32>,
+    S2: ndarray::Data<Elem = f32>,
+{
+    let (m, k) = a.dim();
+    let (_, n) = b.dim();
+    let mut result = Array2::<f32>::zeros((m, n));
+    
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") && n >= 8 {
+        unsafe {
+            matrix_multiply_avx2(a, b, &mut result);
+            return result;
+        }
+    }
+    
+    // Fallback to standard multiplication
+    result.assign(&a.dot(b));
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn matrix_multiply_avx2<S1, S2>(
+    a: &ndarray::ArrayBase<S1, ndarray::Ix2>,
+    b: &ndarray::ArrayBase<S2, ndarray::Ix2>,
+    result: &mut Array2<f32>
+)
+where
+    S1: ndarray::Data<Elem = f32>,
+    S2: ndarray::Data<Elem = f32>,
+{
+    let (m, k) = a.dim();
+    let (_, n) = b.dim();
+    let b_t = b.t();
+    
+    for i in 0..m {
+        for j in (0..n).step_by(8) {
+            if j + 8 <= n {
+                let mut sum = _mm256_setzero_ps();
+                
+                for l in 0..k {
+                    let a_val = _mm256_set1_ps(a[[i, l]]);
+                    let b_row = _mm256_loadu_ps(b_t.slice(s![j..j+8, l]).as_ptr());
+                    sum = _mm256_fmadd_ps(a_val, b_row, sum);
+                }
+                
+                _mm256_storeu_ps(result.slice_mut(s![i, j..j+8]).as_mut_ptr(), sum);
+            } else {
+                // Handle remaining columns
+                for jj in j..n {
+                    let mut sum = 0.0;
+                    for l in 0..k {
+                        sum += a[[i, l]] * b[[l, jj]];
+                    }
+                    result[[i, jj]] = sum;
+                }
+            }
+        }
+    }
 }
 
 /// Optimize matrix using SVD decomposition
@@ -159,7 +262,7 @@ pub fn optimize_svd(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<Optim
     })
 }
 
-/// Optimize matrix using truncated SVD (faster than full SVD for large matrices)
+/// Optimize matrix using truncated SVD with optimized Lanczos iteration
 pub fn optimize_truncated_svd(matrix: &Array2<f32>, config: &MatrixConfig) -> Result<OptimizationResult, MatrixError> {
     let (nrows, ncols) = matrix.dim();
     let rank = config.rank.min(nrows.min(ncols));
@@ -172,40 +275,42 @@ pub fn optimize_truncated_svd(matrix: &Array2<f32>, config: &MatrixConfig) -> Re
         });
     }
     
-    // Use Krylov subspace method for truncated SVD
     let mut q = Array2::<f32>::zeros((nrows, rank));
     let mut h = Array2::<f32>::zeros((rank, rank));
+    let mut v = Array2::<f32>::zeros((nrows, 1));
+    let mut w_buffer = Array2::<f32>::zeros((nrows, 1));
+    let mut temp_buffer = Array2::<f32>::zeros((ncols, 1));
+    let mut current_vec = Array2::<f32>::zeros((nrows, 1));
     
     // Initialize with random vector
-    let mut v = Array2::<f32>::zeros((nrows, 1));
     v.mapv_inplace(|_| rand::random::<f32>());
     v /= frobenius_norm(&v);
     
-    // Lanczos iteration
+    // Pre-compute matrix transpose for better cache utilization
+    let matrix_t = matrix.t();
+    
+    // Optimized Lanczos iteration
     for j in 0..rank {
-        let w = if j == 0 {
-            // For the first iteration, use v directly
-            let temp = matrix.t().dot(&v);  // (ncols, 1)
-            matrix.dot(&temp)  // (nrows, 1)
+        if j == 0 {
+            current_vec.assign(&v);
         } else {
-            // For subsequent iterations, use previous q column
-            let qj = q.slice(s![.., j-1..j]);  // (nrows, 1)
-            let temp = matrix.t().dot(&qj);  // (ncols, 1)
-            matrix.dot(&temp)  // (nrows, 1)
-        };
+            current_vec.assign(&q.slice(s![.., j-1..j]));
+        }
         
-        let mut w = w.to_owned();
+        // Use optimized matrix multiplication
+        temp_buffer.assign(&matrix_multiply_small(&matrix_t, &current_vec));
+        w_buffer.assign(&matrix_multiply_small(matrix, &temp_buffer));
         
         // Gram-Schmidt orthogonalization
         for i in 0..j {
-            let qi = q.slice(s![.., i..i+1]);  // (nrows, 1)
-            h[[i, j]] = qi.t().dot(&w)[[0, 0]];
-            w = w - &(qi.mapv(|x| x * h[[i, j]]));
+            let qi = q.slice(s![.., i..i+1]);
+            h[[i, j]] = qi.t().dot(&w_buffer)[[0, 0]];
+            w_buffer -= &(qi.mapv(|x| x * h[[i, j]]));
         }
         
-        h[[j, j]] = frobenius_norm(&w);
+        h[[j, j]] = frobenius_norm(&w_buffer);
         if h[[j, j]] > 1e-10 {
-            q.slice_mut(s![.., j..j+1]).assign(&(w.mapv(|x| x / h[[j, j]])));
+            q.slice_mut(s![.., j..j+1]).assign(&(w_buffer.mapv(|x| x / h[[j, j]])));
         }
     }
     
